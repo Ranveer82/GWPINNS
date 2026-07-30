@@ -27,6 +27,21 @@ Reproduce with:
 python scripts/benchmark_architectures.py sample_data/config.yaml --iters 900
 ```
 
+### Confirmation on the final code
+
+The table above was produced before two sampling fixes (per-iteration variogram
+pairs, fault-zone collocation). Re-running the two front-runners on the final
+code at 1200 iterations reproduces the pattern, and widens the gap:
+
+| architecture | params | wall time (s) | calibration RMSE (m) | held-out RMSE (m) | held-out R² | head field RMSE (m) | head field R² | log10 T RMSE | log10 T R² |
+|---|---|---|---|---|---|---|---|---|---|
+| resnet | 62,190 | 625 | 0.070 | 1.142 | 0.896 | 1.247 | 0.827 | 0.573 | −0.729 |
+| **cnn** | 405,518 | 1197 | **0.125** | **0.906** | **0.934** | **1.052** | **0.877** | **0.484** | **−0.237** |
+
+Two independent runs, two code revisions, the same ordering and the same
+mechanism: the CNN fits the calibration wells roughly twice as loosely and is
+better everywhere it is scored against something it did not see.
+
 ## What the numbers say
 
 **The CNN fits the calibration wells worst and everything else best.** Its
@@ -65,10 +80,14 @@ caught up. Given a longer budget it does: the production run in
 reaches 0.81 m on held-out wells, better than any row above. So the table ranks
 convergence *at this budget*, not asymptotic capability.
 
-## Why the CNN is still not the default
+## The decision
 
-The default remains a coordinate network, because the CNN's advantage here is
-contingent and its limitations are structural:
+**`cnn` is the default.** It won both runs on every metric that scores the model
+against data it did not train on, and the mechanism is understood rather than
+incidental. The cost is roughly twice the wall time.
+
+Its limitations are real, though, and they are the reason a coordinate network
+is still worth reaching for:
 
 1. **Resolution is fixed by the grid.** The decoder emits a 128 × 128 field over
    a 10 × 8 km domain — about 78 m per pixel. The fault barriers in this case are
@@ -91,23 +110,29 @@ time.
 
 ## Recommendation
 
-- **Sparse data, modest compute, smooth aquifer** → `cnn`. Its implicit
-  smoothness is worth more than the flexibility it gives up, and it is the most
-  robust to overfitting a small well network.
-- **Sharp internal structure (narrow faults), irregular domains, or a long
-  training budget** → a coordinate network; `resnet` for the best
-  accuracy-per-second, `modified_mlp` if the budget is generous.
-- Either way, the loss formulation mattered far more than the architecture in
-  this study. Adding a noise floor to the data terms, redrawing the variogram
-  pairs every iteration and sampling inside the fault zones moved held-out RMSE
-  from 2.45 m to 0.81 m — a larger effect than any difference in the table above.
+| situation | use |
+|---|---|
+| default; sparse wells, aquifer structure at km scale | `cnn` |
+| barriers or contacts narrower than a few grid cells | `resnet` — the CNN cannot resolve below its pixel pitch |
+| strongly re-entrant or fragmented domain | `resnet` — no masking waste |
+| wall clock is the binding constraint | `resnet` — half the time, ~85% of the accuracy |
+| very large budget available | `modified_mlp` — slowest to converge, but keeps improving |
+
+One caveat worth more than the ranking itself: **the loss formulation mattered
+far more than the architecture here.** Adding a noise floor to the data terms,
+redrawing the variogram pairs every iteration and sampling inside the fault
+zones moved held-out RMSE from 2.45 m to 0.81 m on a fixed architecture — a
+larger effect than the entire spread of the table above.
 
 ## Caveats
 
-- One seed per architecture, one budget, one synthetic case.
-- The table was produced at commit `446ac2e`, before two sampling fixes
-  (per-iteration variogram pairs, fault-zone collocation) that apply equally to
-  all four architectures. See `runs/benchmark2` for a confirmation run of the two
-  front-runners on the final code.
-- Ranking at fixed *wall clock* rather than fixed iterations would favour the
-  cheaper backbones and penalise the CNN further.
+- One seed per architecture per budget, and one synthetic case. The four-way
+  table is at commit `446ac2e`; the two-way confirmation is on the final code.
+- Held-out RMSE rests on 12 wells and should not be read on its own; the
+  cell-by-cell columns (n = 28,010) carry the weight.
+- Ranking at fixed *wall clock* rather than fixed iterations would narrow the
+  CNN's margin considerably — at equal time `resnet` gets roughly twice the
+  iterations.
+- The committed example run in `docs/example_run/` uses `modified_mlp`; it
+  predates this study, so its numbers are a conservative baseline rather than
+  the best the pipeline can do.

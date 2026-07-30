@@ -184,8 +184,8 @@ is like-for-like. All are twice-differentiable by autograd.
 |---|---|
 | `mlp` | Fourier-feature MLP — the standard PINN backbone |
 | `resnet` | the same with residual blocks |
-| `modified_mlp` | gated architecture of Wang, Teng & Perdikaris (2021) — **default** |
-| `cnn` | convolutional decoder to a grid, read back through a **cubic B-spline** |
+| `modified_mlp` | gated architecture of Wang, Teng & Perdikaris (2021) |
+| `cnn` | convolutional decoder to a grid, read back through a **cubic B-spline** — **default** |
 
 The CNN needs the spline because bilinear sampling has an identically zero second
 derivative and cannot feed a second-order PDE at all.
@@ -198,10 +198,12 @@ it *cannot* put a narrow bump at each of the 47 calibration wells, and is forced
 to explain them with a field coherent at the scale of the aquifer. That is
 regularisation, not capacity: the CNN has 6× more parameters.
 
-The default is still a coordinate network, because the CNN's resolution is fixed
-by its grid (78 m per pixel here — coarser than the 60 m fault barriers), it
-needs the domain masked, and it costs 2.5× the wall time. Full table, reasoning
-and recommendation in
+The ordering held across two independent runs on two code revisions, so `cnn`
+is the default. Switch to `resnet` when barriers are narrower than the CNN's
+pixel pitch (78 m in this case), when the domain is fragmented enough that
+masking wastes capacity, or when wall clock binds — it is half the time for
+about 85% of the accuracy. Full tables, reasoning and a situation-by-situation
+recommendation in
 [`docs/architecture_comparison.md`](docs/architecture_comparison.md).
 
 ### Why these components

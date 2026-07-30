@@ -141,8 +141,12 @@ class PhysicsConfig:
 class ModelConfig:
     """Network architecture."""
 
-    #: One of "mlp", "resnet", "modified_mlp", "cnn".
-    arch: str = "modified_mlp"
+    #: One of "mlp", "resnet", "modified_mlp", "cnn". The grid CNN wins on this
+    #: problem because it *cannot* overfit a sparse well network - see
+    #: docs/architecture_comparison.md. Use "resnet" when barriers are narrower
+    #: than the CNN's pixel pitch, when the domain is fragmented, or when wall
+    #: clock is the binding constraint.
+    arch: str = "cnn"
 
     #: Hidden width / depth of the head network.
     width: int = 96
