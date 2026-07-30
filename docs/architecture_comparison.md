@@ -1,80 +1,113 @@
 # Choosing the backbone
 
-The task asked which of MLP / ResNet / CNN suits this problem. This is the
-reasoning and the measurement behind the default.
+The task asked which of MLP / ResNet / CNN suits this problem. All four
+candidates are implemented behind one interface
+(`gwpinn/models/backbones.py`) and driven by the same residual, so a run
+changes only the field representation. This is what the measurement said, and
+what it implies.
 
-## Why a coordinate network, not a grid network
+## The measurement
 
-The requirement that settles it is **exact derivatives at arbitrary points**.
+Identical data, seed, collocation schedule, loss terms and iteration budget
+(900 Adam iterations, no L-BFGS); width and depth held equal across
+architectures, so parameter counts differ and are reported. "Head field" and
+"log10 T" are cell-by-cell against the reference finite-difference solution
+(n = 28,010); "held-out well" is the 12 wells excluded from calibration.
 
-The flow residual is second order, and it has to be evaluated at collocation
-points scattered inside an irregular polygon, densified inside a narrow river
-channel, and concentrated near fault traces. A coordinate network
-`f(x, y) → h` gives those derivatives directly through automatic
-differentiation, at any point, at no extra cost — and it never has to represent
-the domain outline, because points are simply sampled inside it.
-
-A convolutional network predicts a field on a **regular grid**. That creates
-three problems here, none of which is fatal on its own:
-
-1. **Derivatives.** Reading the grid back at an arbitrary point needs an
-   interpolant. Bilinear sampling has an identically zero second derivative, so
-   it cannot feed a second-order PDE at all. This implementation therefore reads
-   the CNN's grid through a **cubic B-spline**, which is C² and does support the
-   residual — but the derivatives are now those of the interpolant, not of the
-   field.
-2. **Resolution is fixed by the grid**, not by where information is. A fault
-   barrier a few tens of metres wide has to be resolved by a grid that is uniform
-   over the whole domain.
-3. **The irregular domain and the layer stack** have to be handled by masking,
-   and masked cells still consume capacity and gradient.
-
-The one thing a CNN buys — a spatial inductive bias toward locally coherent
-fields — is supplied here by the variogram term, which states the required
-spatial correlation explicitly rather than implying it through an architecture.
-
-## Why `modified_mlp` over a plain MLP or a residual MLP
-
-All three are coordinate networks and differ only in how the hidden layers are
-wired.
-
-- **`mlp`** — the standard PINN backbone. Fine, but the data loss and the PDE
-  residual produce gradients of very different magnitude on the shared weights,
-  and the stiffer one dominates.
-- **`resnet`** — skip connections keep gradients from vanishing with depth. Helps
-  at depth; does not address the data-vs-residual imbalance.
-- **`modified_mlp`** — Wang, Teng & Perdikaris (2021). Two encoder projections
-  `U`, `V` of the input multiplicatively modulate *every* hidden layer:
-
-  ```
-  H^{k+1} = (1 − Z^k) ⊙ U + Z^k ⊙ V ,    Z^k = σ(W^k H^k + b^k)
-  ```
-
-  The multiplicative paths give residual gradients a short route back to the
-  input, which is exactly the pathology that makes stiff PINNs stall.
-
-All four are implemented behind one interface (`gwpinn/models/backbones.py`) and
-driven by the same residual, so the comparison below changes only the field
-representation.
-
-## Measured comparison
-
-Identical data, seed, collocation schedule, loss terms and iteration budget;
-only `model.arch` differs. Width and depth are held equal across architectures,
-which is the usual protocol — parameter counts therefore differ and are reported.
+| architecture | params | wall time (s) | calibration RMSE (m) | held-out RMSE (m) | held-out R² | head field RMSE (m) | head field R² | log10 T RMSE |
+|---|---|---|---|---|---|---|---|---|
+| mlp | 52,878 | 596 | 0.058 | 1.307 | 0.863 | 1.331 | 0.803 | 0.616 |
+| resnet | 62,190 | 667 | 0.056 | 1.128 | 0.898 | 1.368 | 0.792 | 0.657 |
+| modified_mlp | 85,198 | 1084 | 0.071 | 1.500 | 0.820 | 1.989 | 0.560 | 0.900 |
+| **cnn** | 405,518 | 1490 | **0.164** | **1.014** | **0.918** | **1.028** | **0.883** | **0.521** |
 
 Reproduce with:
 
 ```bash
-python scripts/benchmark_architectures.py sample_data/config.yaml --iters 1000
+python scripts/benchmark_architectures.py sample_data/config.yaml --iters 900
 ```
 
-<!-- BENCHMARK_TABLE -->
+## What the numbers say
+
+**The CNN fits the calibration wells worst and everything else best.** Its
+calibration RMSE is 0.164 m against 0.056–0.071 m for the coordinate networks —
+roughly three times worse — yet it wins on held-out wells, on the head field,
+and on transmissivity. That inversion is the whole result, and it is a
+regularisation story, not a capacity story: the CNN has five to eight times more
+parameters than any of the MLPs.
+
+A coordinate network with Fourier features can put a narrow bump exactly at each
+of the 47 calibration wells. With 47 wells over 80 km² that is the cheapest way
+to reduce the data loss, and it costs accuracy everywhere in between. The grid
+plus cubic-B-spline representation cannot do it: the field is stored at a fixed
+pixel pitch and read through a smooth interpolant, so its attainable frequency
+content is capped. It is forced to explain the wells with a field that is
+coherent at the scale of the aquifer, which is the field we actually want.
+
+That the effect shows up most strongly in the *property* field
+(log10 T RMSE 0.521 vs 0.616–0.900) is consistent: transmissivity is the worst-
+determined quantity in the inversion, so it is where an implicit prior earns the
+most.
+
+**Held-out RMSE alone would not have supported this conclusion** — it rests on
+12 wells, and the spread across architectures (1.01–1.50 m) is not resolvable
+with that sample. The cell-by-cell metrics (n = 28,010) are what make the
+ranking trustworthy, and they agree with it.
+
+**`modified_mlp` is last here**, which is not what its usual motivation would
+predict. The gating of Wang, Teng & Perdikaris (2021) is designed to relieve
+stiff gradient interactions between the data and residual losses, but that
+pathology is already handled in this pipeline by the adaptive weighting, the
+warm-up ramp and the non-dimensionalisation. What remains is a heavier network
+(1084 s against 596 s) that converges more slowly — at 900 iterations it has not
+caught up. Given a longer budget it does: the production run in
+`docs/example_run/` uses `modified_mlp` for 4000 Adam iterations plus L-BFGS and
+reaches 0.81 m on held-out wells, better than any row above. So the table ranks
+convergence *at this budget*, not asymptotic capability.
+
+## Why the CNN is still not the default
+
+The default remains a coordinate network, because the CNN's advantage here is
+contingent and its limitations are structural:
+
+1. **Resolution is fixed by the grid.** The decoder emits a 128 × 128 field over
+   a 10 × 8 km domain — about 78 m per pixel. The fault barriers in this case are
+   60 m wide, i.e. *below* the pixel pitch, so the CNN cannot represent a barrier
+   any sharper than it already fails to. A case with narrower barriers, or one
+   needing local refinement, would need a larger grid everywhere.
+2. **Derivatives are the interpolant's, not the field's.** Bilinear sampling has
+   an identically zero second derivative and cannot feed a second-order PDE at
+   all; this implementation uses a cubic B-spline, which is C² and does work, but
+   the residual is being enforced on a spline reconstruction rather than on the
+   network output directly.
+3. **The domain has to be masked.** Coordinate networks never represent the
+   outline — points are simply sampled inside it. A grid spends capacity and
+   gradient on cells outside the aquifer.
+4. **Cost.** 2.5× the wall time and 6× the parameters of the residual MLP.
+
+Among the coordinate networks, `resnet` is the best accuracy-per-second: it
+matches `mlp` on the head field, beats it on held-out wells, and costs 12% more
+time.
+
+## Recommendation
+
+- **Sparse data, modest compute, smooth aquifer** → `cnn`. Its implicit
+  smoothness is worth more than the flexibility it gives up, and it is the most
+  robust to overfitting a small well network.
+- **Sharp internal structure (narrow faults), irregular domains, or a long
+  training budget** → a coordinate network; `resnet` for the best
+  accuracy-per-second, `modified_mlp` if the budget is generous.
+- Either way, the loss formulation mattered far more than the architecture in
+  this study. Adding a noise floor to the data terms, redrawing the variogram
+  pairs every iteration and sampling inside the fault zones moved held-out RMSE
+  from 2.45 m to 0.81 m — a larger effect than any difference in the table above.
 
 ## Caveats
 
-- One seed per architecture at a fixed budget. Ranking at a fixed *wall-clock*
-  budget rather than a fixed iteration count would favour the cheaper backbones.
-- Results are from the synthetic case in `scripts/make_sample_data.py`. A
-  different heterogeneity structure or well density could reorder the middle of
-  the table; the coordinate-vs-grid distinction is structural and would not move.
+- One seed per architecture, one budget, one synthetic case.
+- The table was produced at commit `446ac2e`, before two sampling fixes
+  (per-iteration variogram pairs, fault-zone collocation) that apply equally to
+  all four architectures. See `runs/benchmark2` for a confirmation run of the two
+  front-runners on the final code.
+- Ranking at fixed *wall clock* rather than fixed iterations would favour the
+  cheaper backbones and penalise the CNN further.

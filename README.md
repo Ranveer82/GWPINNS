@@ -190,8 +190,19 @@ is like-for-like. All are twice-differentiable by autograd.
 The CNN needs the spline because bilinear sampling has an identically zero second
 derivative and cannot feed a second-order PDE at all.
 
-See [`docs/architecture_comparison.md`](docs/architecture_comparison.md) for
-measured results and the reasoning behind the default.
+The measured comparison held one surprise. At a fixed 900-iteration budget the
+**CNN fits the calibration wells worst (0.164 m against 0.056 m) and generalises
+best** — lowest held-out RMSE, lowest head-field and transmissivity error. Its
+grid-plus-spline representation is band-limited, so unlike a Fourier-feature MLP
+it *cannot* put a narrow bump at each of the 47 calibration wells, and is forced
+to explain them with a field coherent at the scale of the aquifer. That is
+regularisation, not capacity: the CNN has 6× more parameters.
+
+The default is still a coordinate network, because the CNN's resolution is fixed
+by its grid (78 m per pixel here — coarser than the 60 m fault barriers), it
+needs the domain masked, and it costs 2.5× the wall time. Full table, reasoning
+and recommendation in
+[`docs/architecture_comparison.md`](docs/architecture_comparison.md).
 
 ### Why these components
 
@@ -242,6 +253,47 @@ fault permeability, riverbed conductance and leakance; and, with
 ```bash
 python -m pytest tests/ -q
 ```
+
+### Results on the synthetic case
+
+59 wells (47 calibration / 12 held out), 6 gauges, 28 pumping tests, two layers,
+10 × 8 km. `modified_mlp`, 4000 Adam + 250 L-BFGS iterations. Full report and all
+figures in [`docs/example_run/`](docs/example_run/).
+
+| quantity | n | RMSE | R² |
+|---|---|---|---|
+| head, calibration wells | 47 | 0.041 m | 0.9998 |
+| **head, held-out wells** | 12 | **0.810 m** | **0.947** |
+| head field vs reference, layer 0 | 28,010 | 1.08 m | 0.870 |
+| head field vs reference, layer 1 | 28,010 | 1.07 m | 0.868 |
+| log10 T at pumping tests | 28 | 0.066 | 0.989 |
+| log10 T field vs reference, layer 0 | 28,010 | 0.611 | −0.97 |
+
+Head residuals show no significant spatial autocorrelation (Moran's I = 0.034,
+p = 0.36), and validation error grows sensibly with distance from the nearest
+calibration well (0.17 m within 200 m → 1.23 m at ~1 km).
+
+### What it does *not* do well
+
+Reported plainly, because the figures show it either way:
+
+- **The transmissivity field has negative R² against the truth.** It reproduces
+  the observed *texture* (correlation length and variance — see
+  `08_variograms.png`) and recovers large-scale anomalies in layer 1, but it is
+  biased about 0.3 log10 units low and has little pointwise skill. Recovering a
+  log-normal K field from 15 pumping tests and 47 heads is genuinely
+  under-determined; the head field is recovered far better than the properties
+  that produce it.
+- **The head jump across the impermeable fault is not reproduced** where no wells
+  sit near the trace (`10_faults.png`): the reference has a 6 m step, the model
+  a 1 m ramp. Adding collocation points inside the barrier zone raised coverage
+  from 3.6% to 16.7% and did not fix it — the jump is a local feature that the
+  flow equation alone does not pin down without nearby data. The practical
+  reading is that a barrier's throw needs an observation pair straddling it.
+- **The lumped physical parameters trade off against each other.** Riverbed
+  conductance came back 13× low and vertical leakance 5× low, while the head
+  field stayed accurate — different combinations reproduce the same heads. Treat
+  the fitted conductances as effective values, not measurements.
 
 ---
 

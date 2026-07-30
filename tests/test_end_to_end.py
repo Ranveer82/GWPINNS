@@ -120,6 +120,27 @@ def test_plots_are_written(tiny_case, tmp_path):
         assert pathlib.Path(p).stat().st_size > 5000
 
 
+def test_lbfgs_stage_runs_and_is_logged(tiny_case):
+    """The second-order stage only starts after the whole Adam budget, so
+    without this it would first be exercised an hour into a production run."""
+    torch.set_num_threads(1)
+    cfg = _tiny_config(tiny_case)
+    cfg.train.adam_iters = 6
+    cfg.train.lbfgs_iters = 8
+    cfg.train.log_every = 4
+
+    from gwpinn.train.trainer import Trainer
+
+    ds = build_dataset(cfg, verbose=False)
+    tr = Trainer(ds, cfg, verbose=False)
+    hist = tr.fit()
+
+    stages = {r["stage"] for r in hist}
+    assert stages == {"adam", "lbfgs"}
+    assert all(np.isfinite(r["total"]) for r in hist)
+    assert all(np.isfinite(p).all() for p in tr.model.parameters())
+
+
 def test_ensemble_produces_uncertainty(tiny_case):
     torch.set_num_threads(1)
     cfg = _tiny_config(tiny_case)
