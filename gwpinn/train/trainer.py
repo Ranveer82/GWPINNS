@@ -268,7 +268,7 @@ class Trainer:
     # ------------------------------------------------------------------ #
 
     def resample(self) -> None:
-        """Draw a fresh set of collocation points and paired samples."""
+        """Draw a fresh set of collocation points."""
         tr = self.cfg.train
         self.cache.colloc = self.ds.sample_collocation(
             tr.n_collocation, self.rng, n_fault=tr.n_fault_colloc
@@ -282,6 +282,20 @@ class Trainer:
             self.cache.boundary = (b, n, bc) if b is not None else None
         else:
             self.cache.boundary = None
+
+        self.resample_geostat()
+
+    def resample_geostat(self) -> None:
+        """Redraw the variogram pairs and kriging anchors.
+
+        Done **every** iteration, unlike the collocation points. A fixed sample
+        of point pairs can be satisfied by nudging the field at those particular
+        points instead of by getting the spatial structure right: with the pairs
+        held for 100 iterations the loss fell to ~1e-4 on the current sample
+        while a fresh sample still scored ~0.2. These batches need no source
+        terms and no autograd graph, so redrawing them is cheap.
+        """
+        tr = self.cfg.train
 
         # ---- variogram pairs, all combinations in one batch ---------------
         n_combos = max(sum(len(v) for v in self.ds.variograms.values()), 1)
@@ -310,7 +324,8 @@ class Trainer:
                 off += 2 * len(p1)
         self.cache.vario_specs = specs
         self.cache.vario_batch = (
-            self.ds.make_batch(np.vstack(pts), requires_grad=False) if pts else None
+            self.ds.make_batch(np.vstack(pts), requires_grad=False, with_sources=False)
+            if pts else None
         )
 
         # ---- kriging anchors, likewise batched ---------------------------
@@ -323,7 +338,8 @@ class Trainer:
             off += len(xy)
         self.cache.krig_specs = specs
         self.cache.krig_batch = (
-            self.ds.make_batch(np.vstack(pts), requires_grad=False) if pts else None
+            self.ds.make_batch(np.vstack(pts), requires_grad=False, with_sources=False)
+            if pts else None
         )
 
     # ------------------------------------------------------------------ #
@@ -529,6 +545,8 @@ class Trainer:
         for it in range(tr.adam_iters):
             if it > 0 and it % max(tr.resample_every, 1) == 0:
                 self.resample()
+            elif it > 0:
+                self.resample_geostat()
 
             ramp = min(1.0, (it + 1) / max(tr.pde_warmup, 1))
             terms = self.compute_losses()

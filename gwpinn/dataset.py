@@ -156,14 +156,19 @@ class GWDataset:
         xy: np.ndarray,
         times: Optional[np.ndarray] = None,
         requires_grad: bool = True,
+        with_sources: bool = True,
     ) -> Batch:
+        """Build a batch. ``with_sources=False`` skips the recharge and river
+        lookups, which only the PDE residual needs - worth it for the geostatistical
+        batches, which are rebuilt every iteration."""
         x, y = xy[:, 0], xy[:, 1]
         xyt = self._tt(xy).requires_grad_(requires_grad)
         t = None
         if self.transient:
             tv = np.zeros(len(xy)) if times is None else np.asarray(times, dtype=float)
             t = self._tt(tv.reshape(-1, 1)).requires_grad_(requires_grad)
-        return Batch(xy=xyt, elev=self._elevations(x, y), sources=self._sources(x, y), t=t)
+        sources = self._sources(x, y) if with_sources else Sources()
+        return Batch(xy=xyt, elev=self._elevations(x, y), sources=sources, t=t)
 
     def sample_collocation(
         self, n: int, rng: np.random.Generator, n_fault: int = 0
