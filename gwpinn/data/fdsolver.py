@@ -176,9 +176,12 @@ def _assemble(
             rhs[gid(0, ii.ravel(), jj.ravel())] -= (rc * river_stage).ravel()
 
         if storage_diag is not None:
-            diag -= storage_diag[l] * active
-            rhs[gid(l, ii.ravel(), jj.ravel())] -= (
-                storage_rhs[l] * active
+            # np.where, not multiplication by the mask: the previous head is NaN
+            # outside the active area and NaN * 0 is still NaN, which would put
+            # NaN into the right-hand side and make the solve return garbage.
+            diag -= np.where(active, storage_diag[l], 0.0)
+            rhs[gid(l, ii.ravel(), jj.ravel())] -= np.where(
+                active, storage_rhs[l], 0.0
             ).ravel()
 
         # Inactive cells get a trivial identity row.
@@ -320,7 +323,8 @@ def solve_transient(
 
     times = list(times)
     out = np.zeros((len(times), n_layers, ny, nx))
-    h = h_init.copy()
+    # Work with a finite array; masking is applied to the output only.
+    h = np.where(np.isfinite(h_init), h_init, np.nanmean(h_init))
     out[0] = np.where(active[None], h, np.nan)
 
     for step in range(1, len(times)):

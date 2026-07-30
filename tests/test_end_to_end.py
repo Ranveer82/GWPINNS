@@ -138,7 +138,7 @@ def test_lbfgs_stage_runs_and_is_logged(tiny_case):
     stages = {r["stage"] for r in hist}
     assert stages == {"adam", "lbfgs"}
     assert all(np.isfinite(r["total"]) for r in hist)
-    assert all(np.isfinite(p).all() for p in tr.model.parameters())
+    assert all(torch.isfinite(p.detach()).all() for p in tr.model.parameters())
 
 
 def test_ensemble_produces_uncertainty(tiny_case):
