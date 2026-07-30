@@ -41,6 +41,7 @@ class RandomFourierFeatures(nn.Module):
         in_dim: int,
         n_features: int = 64,
         sigmas: Sequence[float] = (1.0, 3.0, 6.0),
+        dim_scales: Sequence[float] | None = None,
         trainable: bool = False,
         dtype: torch.dtype = torch.float32,
         generator: torch.Generator | None = None,
@@ -54,6 +55,20 @@ class RandomFourierFeatures(nn.Module):
             b = torch.randn(per_band, in_dim, dtype=dtype, generator=generator) * s
             blocks.append(b)
         B = torch.cat(blocks, dim=0)
+
+        if dim_scales is not None:
+            # Per-input-dimension bandwidth. A coordinate that is already steep -
+            # a tanh fault map saturating within one barrier width - must be
+            # given a *low* frequency, or the basis oscillates several times
+            # inside the barrier and the second derivative in the PDE residual
+            # blows up. The map supplies the sharpness; the embedding should not
+            # multiply it.
+            scale = torch.as_tensor(list(dim_scales), dtype=dtype)
+            if scale.numel() != in_dim:
+                raise ValueError(
+                    f"dim_scales has {scale.numel()} entries, expected {in_dim}"
+                )
+            B = B * scale[None, :]
 
         if trainable:
             self.B = nn.Parameter(B)

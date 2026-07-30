@@ -621,6 +621,53 @@ def plot_inputs(ds: GWDataset, path: pathlib.Path) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def plot_fault_steps(report: Dict, path: pathlib.Path) -> Optional[str]:
+    """Head held up across each fault, sampled along the whole trace.
+
+    The single transect in ``plot_fault_section`` can land on an unrepresentative
+    stretch. This walks the trace and plots the paired head difference at every
+    station, which is the quantity a barrier exists to produce.
+    """
+    faults = report.get("faults", {}).get("faults")
+    if not faults:
+        return None
+
+    panels = [
+        (f, rec)
+        for f in faults
+        for rec in f["by_offset"]
+        if rec.get("_profile")
+    ]
+    if not panels:
+        return None
+
+    fig, axes = plt.subplots(
+        1, len(panels), figsize=(4.6 * len(panels), 3.8), squeeze=False
+    )
+    for ax, (f, rec) in zip(axes[0], panels):
+        prof = rec["_profile"]
+        s = np.asarray(prof["s"])
+        ax.plot(s, prof["reference"], color=C_REF, lw=1.8, ls="--",
+                label="reference")
+        ax.plot(s, prof["predicted"], color=C_MODEL, lw=2.0, label="PINN")
+        ax.axhline(0.0, color="#999999", lw=0.8)
+        flag = f.get("perm_flag")
+        kind = ("impermeable" if flag == 0 else
+                "trainable" if flag == 1 else f"perm={flag}")
+        frac = rec.get("recovered_fraction", float("nan"))
+        ax.set_xlabel("position along fault trace (normalised)")
+        ax.set_ylabel("head difference across trace (m)")
+        ax.set_title(
+            f"Fault {f['fault']} ({kind}), ±{rec['offset_m']:.0f} m\n"
+            f"{100 * frac:.0f}% of the reference step recovered"
+        )
+        ax.legend(fontsize=8)
+
+    fig.suptitle("Head held up by each barrier", fontweight="bold")
+    fig.tight_layout()
+    return _save(fig, path)
+
+
 def make_all_plots(
     models: Sequence,
     ds: GWDataset,
@@ -658,6 +705,7 @@ def make_all_plots(
     paths.append(
         plot_fault_section(models, ds, pred, truth, report, outdir / "10_faults.png")
     )
+    paths.append(plot_fault_steps(report, outdir / "10b_fault_steps.png"))
     paths.append(plot_uncertainty(pred, ds, outdir / "11_uncertainty.png"))
 
     return [p for p in paths if p]

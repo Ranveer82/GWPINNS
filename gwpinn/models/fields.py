@@ -96,7 +96,30 @@ def _logit(p: float) -> float:
 
 
 class _FeatureMixin(nn.Module):
-    """Shared input assembly: normalised coords + Fourier bands + fault sides."""
+    """Shared input assembly: normalised coords + Fourier bands + fault sides.
+
+    Two ways of giving the network access to the faults:
+
+    ``fault_coords = False`` (*side features*)
+        ``[x, y, γ(x, y), u₁ … u_F]`` - the Fourier embedding γ sees only the
+        physical coordinates, and ``u_f = tanh(s_f / w)`` is appended as an extra
+        input. The network can build a jump out of ``u``, but every basis
+        function it has is smooth across the fault, so the jump has to be
+        assembled against the grain of the representation.
+
+    ``fault_coords = True`` (*coordinate mapping*)
+        ``ξ = [x, y, u₁ … u_F]`` and then ``[ξ, γ(ξ)]`` - the fault coordinates
+        are part of the input to the embedding, so **the Fourier basis itself is
+        steep across the fault**. Two points a metre apart on opposite sides of a
+        barrier are far apart in ξ, and a smooth function of ξ is a near
+        discontinuous function of ``(x, y)``.
+
+    ``tanh`` is the natural map: it saturates to ±1 away from the trace, is
+    already in the same range as the normalised coordinates (so one set of
+    Fourier bandwidths serves both), and its transition width is exactly the
+    barrier width the physics smears the head drop over - so the coordinate map
+    and the anisotropy tensor agree on the length scale.
+    """
 
     def _build_features(
         self,
@@ -106,23 +129,38 @@ class _FeatureMixin(nn.Module):
         n_fault_feats: int,
         dtype: torch.dtype,
         generator: Optional[torch.Generator],
+        fault_coords: bool = False,
+        fault_sigma_scale: float = 0.15,
     ) -> int:
-        self.embed = RandomFourierFeatures(
-            in_dim, n_fourier, sigmas, dtype=dtype, generator=generator
-        )
         self.n_fault_feats = int(n_fault_feats)
+        self.fault_coords = bool(fault_coords) and self.n_fault_feats > 0
+
+        embed_dim = in_dim + (self.n_fault_feats if self.fault_coords else 0)
+        dim_scales = None
+        if self.fault_coords:
+            dim_scales = [1.0] * in_dim + [fault_sigma_scale] * self.n_fault_feats
+        self.embed = RandomFourierFeatures(
+            embed_dim, n_fourier, sigmas, dim_scales=dim_scales,
+            dtype=dtype, generator=generator,
+        )
+        if self.fault_coords:
+            return embed_dim + self.embed.out_dim
         return in_dim + self.embed.out_dim + self.n_fault_feats
 
     def _assemble(
         self, coords: torch.Tensor, fault_feats: Optional[torch.Tensor]
     ) -> torch.Tensor:
-        parts = [coords, self.embed(coords)]
-        if self.n_fault_feats > 0:
-            if fault_feats is None:
-                parts.append(coords.new_zeros(coords.shape[0], self.n_fault_feats))
-            else:
-                parts.append(fault_feats)
-        return torch.cat(parts, dim=-1)
+        if self.n_fault_feats == 0:
+            return torch.cat([coords, self.embed(coords)], dim=-1)
+
+        if fault_feats is None:
+            fault_feats = coords.new_zeros(coords.shape[0], self.n_fault_feats)
+
+        if self.fault_coords:
+            xi = torch.cat([coords, fault_feats], dim=-1)
+            return torch.cat([xi, self.embed(xi)], dim=-1)
+
+        return torch.cat([coords, self.embed(coords), fault_feats], dim=-1)
 
 
 class HeadField(_FeatureMixin):
@@ -139,6 +177,8 @@ class HeadField(_FeatureMixin):
         n_fourier: int = 64,
         fourier_sigma: float = 3.0,
         n_fault_feats: int = 0,
+        fault_coords: bool = False,
+        fault_sigma_scale: float = 0.15,
         transient: bool = False,
         dtype: torch.dtype = torch.float32,
         cnn_latent: int = 16,
@@ -153,7 +193,8 @@ class HeadField(_FeatureMixin):
         coord_dim = 3 if transient else 2
         sigmas = (0.5 * fourier_sigma, fourier_sigma, 2.0 * fourier_sigma)
         in_dim = self._build_features(
-            coord_dim, n_fourier, sigmas, n_fault_feats, dtype, generator
+            coord_dim, n_fourier, sigmas, n_fault_feats, dtype, generator,
+            fault_coords=fault_coords, fault_sigma_scale=fault_sigma_scale,
         )
 
         self.backbone = build_backbone(
@@ -197,6 +238,8 @@ class PropertyField(_FeatureMixin):
         n_fourier: int = 64,
         fourier_sigma: float = 6.0,
         n_fault_feats: int = 0,
+        fault_coords: bool = False,
+        fault_sigma_scale: float = 0.15,
         k_bounds: Tuple[float, float] = (1e-3, 5e2),
         s_bounds: Tuple[float, float] = (1e-5, 3e-1),
         dtype: torch.dtype = torch.float32,
@@ -209,7 +252,10 @@ class PropertyField(_FeatureMixin):
         self.norm = normalizer
 
         sigmas = (0.5 * fourier_sigma, fourier_sigma, 2.0 * fourier_sigma)
-        in_dim = self._build_features(2, n_fourier, sigmas, n_fault_feats, dtype, generator)
+        in_dim = self._build_features(
+            2, n_fourier, sigmas, n_fault_feats, dtype, generator,
+            fault_coords=fault_coords, fault_sigma_scale=fault_sigma_scale,
+        )
 
         self.backbone = build_backbone(
             arch, in_dim, 2 * n_layers, width, depth, activation,

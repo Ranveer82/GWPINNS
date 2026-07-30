@@ -172,6 +172,19 @@ class ModelConfig:
     #: network can represent the sharp head drop across a barrier.
     fault_features: bool = True
 
+    #: Put those indicators *inside* the Fourier embedding rather than appending
+    #: them after it, so the basis functions themselves are steep across a fault
+    #: (see gwpinn.models.fields._FeatureMixin). Only meaningful for coordinate
+    #: networks - the grid CNN reads its field by position and ignores these
+    #: features entirely.
+    fault_coords: bool = False
+
+    #: Fourier bandwidth applied to the mapped fault coordinates, relative to
+    #: the spatial ones. Must be small: tanh already saturates within a barrier
+    #: width, so a full-bandwidth band would oscillate several times inside the
+    #: barrier and make the second-order residual diverge.
+    fault_sigma_scale: float = 0.15
+
     #: CNN-only: shape of the latent grid the decoder upsamples from.
     cnn_latent: int = 16
     cnn_channels: int = 64

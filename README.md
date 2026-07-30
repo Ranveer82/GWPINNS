@@ -90,6 +90,13 @@ Two honest caveats:
   jump across the fault, so it can produce a sharp offset without needing extreme
   Fourier frequencies.
 
+An optional stronger form (`model.fault_coords: true`) puts that indicator
+*inside* the Fourier embedding, so the basis functions themselves are steep
+across the trace. It takes recovery of an impermeable fault's head step from 12%
+to 72% — but degrades the global head field and invents steps on faults that are
+not barriers. Measured trade-off and guidance:
+[`docs/fault_representation.md`](docs/fault_representation.md).
+
 ### River stage
 
 Gauges give stage at points; the polygon gives the area over which stage is needed.
@@ -286,12 +293,14 @@ Reported plainly, because the figures show it either way:
   log-normal K field from 15 pumping tests and 47 heads is genuinely
   under-determined; the head field is recovered far better than the properties
   that produce it.
-- **The head jump across the impermeable fault is not reproduced** where no wells
-  sit near the trace (`10_faults.png`): the reference has a 6 m step, the model
-  a 1 m ramp. Adding collocation points inside the barrier zone raised coverage
-  from 3.6% to 16.7% and did not fix it — the jump is a local feature that the
-  flow equation alone does not pin down without nearby data. The practical
-  reading is that a barrier's throw needs an observation pair straddling it.
+- **The head jump across the impermeable fault is not reproduced** by default
+  (`10_faults.png`): the reference has a 6 m step, the model a 1 m ramp — 12% of
+  the throw. Adding collocation points inside the barrier zone raised coverage
+  from 3.6% to 16.7% and did not fix it. It turns out to be a *representational*
+  limit as much as a data one: mapping the coordinates through the fault
+  indicator recovers up to 72% of the step, at a real cost to everything else
+  ([`docs/fault_representation.md`](docs/fault_representation.md)). Either way,
+  a barrier's throw wants an observation pair straddling it.
 - **The lumped physical parameters trade off against each other.** Riverbed
   conductance came back 13× low and vertical leakance 5× low, while the head
   field stayed accurate — different combinations reproduce the same heads. Treat

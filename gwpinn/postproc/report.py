@@ -60,7 +60,7 @@ def build_report(
 ) -> Dict:
     """Assemble every accuracy figure the run can produce."""
     report: Dict = {"config": {}, "head": {}, "properties": {}, "spatial": {},
-                    "parameters": {}, "variograms": {}, "grid": {}}
+                    "parameters": {}, "variograms": {}, "faults": {}, "grid": {}}
 
     report["config"] = {
         "architecture": ds.cfg.model.arch,
@@ -173,11 +173,124 @@ def build_report(
             entry["realised"] = _field_variogram(field, ds, model.range_)
             report["variograms"][key] = entry
 
+    # ---- did the barriers actually hold up any head? ---------------------
+    report["faults"] = fault_step_metrics(models, ds, truth)
+
     # ---- grid-wide comparison against the reference solution --------------
     if truth:
         report["grid"] = _truth_metrics(pred, truth, ds)
 
     return report
+
+
+def sample_across_polyline(
+    line: np.ndarray, n: int = 80
+) -> tuple[np.ndarray, np.ndarray]:
+    """``n`` points spread along a polyline, with consistently oriented normals.
+
+    The normals are flipped onto a common side so that a head difference taken
+    across the trace keeps its sign along the whole fault instead of cancelling
+    where the trace changes direction.
+    """
+    line = np.asarray(line, dtype=float)[:, :2]
+    seg = np.diff(line, axis=0)
+    seglen = np.hypot(seg[:, 0], seg[:, 1])
+    cum = np.concatenate([[0.0], np.cumsum(seglen)])
+    if cum[-1] <= 0:
+        return line[:1], np.zeros((1, 2))
+
+    s = np.linspace(0.02, 0.98, n) * cum[-1]
+    k = np.clip(np.searchsorted(cum, s) - 1, 0, len(seg) - 1)
+    t = (s - cum[k]) / np.maximum(seglen[k], 1e-12)
+    pts = line[k] + seg[k] * t[:, None]
+
+    tang = seg[k] / np.maximum(seglen[k], 1e-12)[:, None]
+    nrm = np.column_stack([-tang[:, 1], tang[:, 0]])
+    ref = nrm.mean(axis=0)
+    if np.hypot(*ref) < 1e-9:
+        ref = nrm[0]
+    nrm[nrm @ ref < 0] *= -1.0
+    return pts, nrm
+
+
+def fault_step_metrics(
+    models: Sequence,
+    ds: GWDataset,
+    truth: Optional[Dict[str, np.ndarray]] = None,
+    offsets: Sequence[float] = (1.5, 4.0),
+    n_samples: int = 80,
+) -> Dict:
+    """Head difference measured straight across each fault trace.
+
+    A barrier's whole hydraulic significance is the head it holds up, so this is
+    the metric that says whether it was reproduced. It is measured the way a
+    field team would: paired observations either side of the trace, at a fixed
+    stand-off expressed in barrier widths.
+    """
+    if ds.fault_lines is None or len(ds.fault_lines) == 0:
+        return {}
+
+    width = max(ds.cfg.physics.fault_width, 1e-6)
+    template = ds.domain.template
+    truth_rasters = None
+    if truth and "head" in truth:
+        truth_rasters = [
+            Raster(truth["head"][l], template.transform, template.crs)
+            for l in range(truth["head"].shape[0])
+        ]
+
+    out: Dict = {"offsets_in_widths": list(offsets), "faults": []}
+    perm = ds.fault_lines.attrs.get("perm")
+
+    for i, line in enumerate(ds.fault_lines.lines):
+        pts, nrm = sample_across_polyline(line, n_samples)
+        entry: Dict = {
+            "fault": i,
+            "perm_flag": None if perm is None else float(perm[i]),
+            "by_offset": [],
+        }
+        for m in offsets:
+            plus = pts + m * width * nrm
+            minus = pts - m * width * nrm
+            ok = ds.domain.contains(plus[:, 0], plus[:, 1]) & ds.domain.contains(
+                minus[:, 0], minus[:, 1]
+            )
+            if ok.sum() < 5:
+                continue
+            hp = predict_points(models, ds, plus[ok])["head"][:, 0]
+            hm = predict_points(models, ds, minus[ok])["head"][:, 0]
+            step = hp - hm
+
+            rec = {
+                "offset_m": float(m * width),
+                "n": int(ok.sum()),
+                "predicted_mean_step_m": float(np.mean(step)),
+                "predicted_mean_abs_step_m": float(np.mean(np.abs(step))),
+            }
+            if truth_rasters is not None:
+                tp = truth_rasters[0].sample(plus[ok, 0], plus[ok, 1])
+                tm = truth_rasters[0].sample(minus[ok, 0], minus[ok, 1])
+                tstep = tp - tm
+                good = np.isfinite(tstep)
+                if good.any():
+                    rec["reference_mean_step_m"] = float(np.mean(tstep[good]))
+                    rec["reference_mean_abs_step_m"] = float(np.mean(np.abs(tstep[good])))
+                    ref_abs = np.mean(np.abs(tstep[good]))
+                    rec["recovered_fraction"] = (
+                        float(np.mean(np.abs(step[good])) / ref_abs)
+                        if ref_abs > 1e-9 else float("nan")
+                    )
+                    rec["step_rmse_m"] = float(
+                        np.sqrt(np.mean((step[good] - tstep[good]) ** 2))
+                    )
+                    rec["_profile"] = {
+                        "s": np.linspace(0, 1, int(ok.sum())).tolist(),
+                        "predicted": step.tolist(),
+                        "reference": tstep.tolist(),
+                    }
+            entry["by_offset"].append(rec)
+        out["faults"].append(entry)
+    return out
 
 
 def _field_variogram(field: np.ndarray, ds: GWDataset, range_hint: float) -> Dict:
@@ -330,6 +443,28 @@ def format_report(report: Dict) -> str:
         if par.get("leakance"):
             vals = ", ".join(f"{v:.3e}" for v in par["leakance"]["mean"])
             add(f"  vertical leakance    = [{vals}] 1/d")
+
+    fl = report.get("faults", {})
+    if fl.get("faults"):
+        add("")
+        add("-- head held up across each fault trace " + "-" * 38)
+        for f in fl["faults"]:
+            flag = f.get("perm_flag")
+            kind = ("impermeable" if flag == 0 else
+                    "trainable" if flag == 1 else f"fixed perm={flag}")
+            for rec in f["by_offset"]:
+                ref = rec.get("reference_mean_abs_step_m")
+                frac = rec.get("recovered_fraction")
+                line = (
+                    f"  fault {f['fault']} ({kind}), +/-{rec['offset_m']:.0f} m: "
+                    f"predicted {rec['predicted_mean_abs_step_m']:.3f} m"
+                )
+                if ref is not None:
+                    line += (
+                        f", reference {ref:.3f} m"
+                        f"  -> {100 * frac:.0f}% recovered"
+                    )
+                add(line)
 
     vg = report.get("variograms", {})
     if vg:

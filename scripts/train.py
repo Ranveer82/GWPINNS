@@ -29,6 +29,11 @@ def main() -> None:
     ap.add_argument("config")
     ap.add_argument("-o", "--workdir", default=None, help="override paths.workdir")
     ap.add_argument("--arch", default=None, help="override model.arch")
+    ap.add_argument("--fault-coords", dest="fault_coords", action="store_true",
+                    default=None,
+                    help="map coordinates through tanh(signed distance) per fault")
+    ap.add_argument("--no-fault-coords", dest="fault_coords", action="store_false",
+                    help="append the fault indicators instead of mapping coordinates")
     ap.add_argument("--iters", type=int, default=None, help="override train.adam_iters")
     ap.add_argument("--lbfgs", type=int, default=None, help="override train.lbfgs_iters")
     ap.add_argument("--ensemble", type=int, default=None, help="override train.n_ensemble")
@@ -45,6 +50,8 @@ def main() -> None:
         cfg.paths.workdir = args.workdir
     if args.arch:
         cfg.model.arch = args.arch
+    if args.fault_coords is not None:
+        cfg.model.fault_coords = args.fault_coords
     if args.iters is not None:
         cfg.train.adam_iters = args.iters
     if args.lbfgs is not None:
