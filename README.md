@@ -1,370 +1,272 @@
-# gwpinn — physics-informed inversion of groundwater head and aquifer properties
+# GWPINNS — inverse Physics-Informed Neural Networks for 3D transient groundwater flow across a fault
 
-`gwpinn` fits a **groundwater table** and **heterogeneous aquifer property fields**
-(transmissivity, hydraulic conductivity, storage coefficient) to sparse field data,
-subject to the multilayer groundwater flow equation.
+Infer a **3D hydraulic conductivity field** and, more importantly, the
+**hydraulic behaviour of a fault** (barrier or conduit) from nothing but sparse
+groundwater head time series `h(x,y,z,t)` at a handful of monitoring wells.
 
-It takes the data a real project actually has — a few dozen well readings, a handful
-of river gauges, some pumping tests, and elevation rasters — and returns rasters of
-head and aquifer properties per layer, together with an accuracy assessment.
+The governing equation, implemented directly in PyTorch autograd with no
+high-level PDE wrapper:
 
-```
-observed heads (points)  ─┐
-river gauges + water-surface polygon ─┤
-faults / flow barriers (lines) ───────┼──►  PINN  ──►  head raster per layer
-DTM + layer bottom rasters ───────────┤              aquifer property rasters
-pumping-test T and S (points) ────────┘              accuracy metrics + plots
-```
+$$S_s \frac{\partial h}{\partial t} = \nabla \cdot \left( K \nabla h \right) + W$$
+
+Three architectures are implemented and compared on the same benchmark, because
+the thing that makes this problem hard — a conductivity discontinuity spanning
+five orders of magnitude — is exactly what a plain PINN handles worst.
 
 ---
 
-## What makes this an inverse problem, and how it is made well-posed
+## Repository structure
 
-Only the *divergence* of `T ∇h` is visible in head data, so many transmissivity
-fields reproduce the same observed heads. Four independent constraints are combined
-so the answer is determined by more than the head misfit alone:
-
-| Constraint | Where it comes from |
-|---|---|
-| **Flow equation** | quasi-3D multilayer PDE enforced at collocation points |
-| **Point measurements** | pumping-test `T` and `S`, anchoring the level of each field |
-| **Variogram structure** | the *spatial statistics* of the property field must match the variogram fitted to the pumping tests — the sill **and** the correlation range |
-| **Edge-preserving regularisation** | pseudo-Huber (total-variation-like) penalty that suppresses speckle without smearing genuine facies contacts |
-
-The variogram term is the distinctive one. A smoothness penalty can only push
-variance *down*, so it biases the field toward flat. Matching the variogram forces
-the learned field to have the right variance *and* the right correlation length —
-it constrains texture, not just roughness.
+```
+GWPINNS/
+├── gwpinns/
+│   ├── config.py               Single source of truth: geometry, fault, stresses, wells
+│   ├── benchmark/              PHASE 1 — synthetic truth
+│   │   ├── fields.py             Log-normal K via FFT circulant embedding + fault overprint
+│   │   ├── modflow6.py           FloPy / MODFLOW 6 forward model
+│   │   ├── fdsolver.py           Reference FD solver (same discretisation as MF6)
+│   │   ├── observations.py       Sparse monitoring-well sampler with noise
+│   │   └── generate.py           Orchestration + on-disk dataset format
+│   ├── pinn/                   PHASE 2 — the inverse models
+│   │   ├── scaling.py            Non-dimensionalisation and the PDE coefficients
+│   │   ├── networks.py           MLP, Fourier features, bounded log-K, fault leakance
+│   │   ├── forcing.py            Differentiable W(x,y,z,t,h): wells + recharge + ET
+│   │   ├── derivatives.py        Thin autograd helpers
+│   │   ├── sampling.py           Collocation / boundary / interface point sampling
+│   │   ├── base.py               Shared coordinate handling and loss assembly
+│   │   ├── baseline.py           Architecture 1 — standard inverse PINN
+│   │   ├── mixed.py              Architecture 2 — mixed-variable (head + Darcy flux)
+│   │   ├── cpinn.py              Architecture 3 — conservative domain decomposition
+│   │   └── trainer.py            Adam + L-BFGS, loss balancing, physics curriculum
+│   └── evaluation/
+│       ├── metrics.py            Head / conductivity / fault-characterisation scores
+│       ├── report.py             Model → metric record
+│       └── plots.py              Figures (colourblind-safe, validated palette)
+├── scripts/
+│   ├── 01_generate_benchmark.py  Build both scenarios
+│   ├── 02_train.py               Train one architecture on one scenario
+│   ├── 03_run_study.py           Full comparison + figures + Markdown report
+│   ├── 04_ablations.py           Interface condition / prior / residual weighting
+│   └── 05_merge_study.py         Recombine per-scenario study runs
+├── tests/
+│   ├── test_benchmark.py         Incl. Theis and 1-D barrier analytical validation
+│   └── test_pinn.py              Incl. manufactured-solution check of the residual
+├── docs/
+│   ├── METHOD.md                 Why the equations and numerics are as they are
+│   └── RESULTS.md                The study, with figures and the honest caveats
+├── data/                         Generated benchmarks (gitignored)
+└── runs/                         Training outputs (gitignored)
+```
 
 ---
-
-## Governing equations
-
-For each aquifer layer `l`:
-
-```
-S_l ∂h_l/∂t  =  ∇·( T_l A ∇h_l )
-               + C_{l-1,l} (h_{l-1} − h_l)          vertical leakage from above
-               + C_{l,l+1} (h_{l+1} − h_l)          vertical leakage from below
-               + R_l                                 areal recharge (layer 0)
-               + C_riv · 1_river · (h_riv − h_l)     river exchange (Robin / MODFLOW RIV)
-```
-
-* **Unconfined top layer** — `T₀ = K₀ · (h₀ − z_bot,₀)`, so the equation is nonlinear
-  in head (Boussinesq). A mesh-free PINN handles this with no outer Picard loop.
-* **Confined layers** — `T_l = K_l · (z_bot,l−1 − z_bot,l)`.
-* **`A`** is the fault anisotropy tensor (below).
-
-Every derivative is taken by automatic differentiation, so the residual is exact at
-every point rather than discretised onto a grid.
-
-### Faults as anisotropic barriers
-
-A fault is a surface across which head drops sharply. Rather than decomposing the
-domain (XPINN-style), the fault is represented as a narrow zone in which
-conductivity *normal to the fault* is scaled by `α`, while flow along it is
-untouched:
-
-```
-q = −T ( I − (1−α) ψ(x) n nᵀ ) ∇h        ψ = Gaussian bump of half-width w
-```
-
-This is the continuous analogue of MODFLOW's Horizontal Flow Barrier package. It
-keeps one global network, and `α` is a plain trainable scalar.
-
-The `perm` attribute on each fault line controls this:
-
-| `perm` | meaning |
-|---|---|
-| `0` | impermeable barrier — `α` pinned at `physics.fault_perm_min` |
-| `1` | `α` is **trainable** — fitted from the head data |
-| `0 < p < 1` | fixed permeability multiplier `p` |
-
-Two honest caveats:
-
-* A *perfectly* impermeable fault would need an infinite head gradient, which no
-  continuous network can represent. `α` is floored at `fault_perm_min` (default
-  1e-3), which is hydraulically indistinguishable from a true barrier.
-* Each collocation point also receives a **signed side indicator** per fault
-  (`tanh` of the signed distance). This gives the network a ready-made basis for a
-  jump across the fault, so it can produce a sharp offset without needing extreme
-  Fourier frequencies.
-
-An optional stronger form (`model.fault_coords: true`) puts that indicator
-*inside* the Fourier embedding, so the basis functions themselves are steep
-across the trace. It takes recovery of an impermeable fault's head step from 12%
-to 72% — but degrades the global head field and invents steps on faults that are
-not barriers. Measured trade-off and guidance:
-[`docs/fault_representation.md`](docs/fault_representation.md).
-
-### River stage
-
-Gauges give stage at points; the polygon gives the area over which stage is needed.
-Interpolation is done in **along-stream coordinates**, not in the plane:
-
-1. A centerline is extracted from the water-surface polygon by principal-curve
-   fitting (or supplied directly).
-2. Gauges are projected onto it to give a chainage.
-3. Stage is interpolated against chainage with a monotone (PCHIP) fit, optionally
-   passed through a decreasing isotonic regression first.
-
-A 2-D interpolator would leak the downstream gradient across meander bends and
-produce a water surface that runs uphill along the channel.
-
-### Layer geometry
-
-Independently interpolated bottom surfaces routinely cross. Every bottom is pushed
-down so each layer is at least `domain.min_thickness` thick, cascading downward from
-the DTM; the number and magnitude of corrections is reported.
-
-### On storage coefficients
-
-**`S` does not appear in the steady-state equation.** In `regime: steady` it is
-constrained *only* by the pumping-test points and their variogram — it is a
-geostatistical interpolation, not a physical inversion, and the report should be
-read that way. Set `regime: transient` (with time-stamped observations) to make `S`
-identifiable from the flow field itself.
-
----
-
-## Installation
-
-```bash
-pip install -r requirements.txt
-pip install -e .
-```
 
 ## Quick start
 
 ```bash
-# 1. generate a synthetic case with known ground truth
-python scripts/make_sample_data.py -o sample_data
+pip install -r requirements.txt
 
-# 2. fit
-python scripts/train.py sample_data/config.yaml -o runs/demo
+# optional but recommended — otherwise the reference solver is used
+python -m flopy.utils.get_modflow ~/.local/bin
 
-# 3. compare architectures
-python scripts/benchmark_architectures.py sample_data/config.yaml --iters 1000
-```
-
-Outputs land in `runs/demo/`:
-
-```
-rasters/    head_L*.tif, transmissivity_L*.tif, conductivity_L*.tif,
-            storage_L*.tif, saturated_thickness_L*.tif, depth_to_water.tif
-            (+ *_std_L*.tif when an ensemble was trained)
-plots/      01_inputs … 11_uncertainty
-report.json / report.txt      all accuracy metrics
-history.json, model.pt, config_used.yaml
+python scripts/01_generate_benchmark.py            # Phase 1: both scenarios
+python scripts/03_run_study.py --quick             # smoke test, a few minutes
+python scripts/03_run_study.py                     # full study
+pytest -q                                          # 36 tests
 ```
 
 ---
 
-## Inputs
+## Phase 1 — the benchmark
 
-All optional except the DTM, one layer bottom, and head observations. Attribute
-names are matched case-insensitively through an alias table, so `HEAD`, `gw_head`,
-`water_leve` (DBF truncation) all resolve.
+A three-layer **confined** aquifer, 5000 × 3000 × 60 m on a 50 × 30 × 3 grid,
+bisected by a fault zone whose plane strikes 12° off the y-axis.
 
-| Config key | Geometry | Attributes |
-|---|---|---|
-| `head_obs` | point | `head`, opt. `layer`, `time`, `weight` |
-| `gauge_obs` | point | `stage`, opt. `time` |
-| `river_polygon` | polygon | — |
-| `river_centerline` | line | — (derived from the polygon if absent) |
-| `faults` | line | `perm` (see above) |
-| `dtm` | raster | top of layer 0 |
-| `layer_bottoms` | rasters | one per layer, ordered top → bottom |
-| `prop_obs` | point | `T` (m²/d), `S` (−), opt. `layer` |
-| `domain` | polygon | optional active-area clip |
-| `boundary` | line | `bctype` ∈ {`noflow`,`head`,`ghb`}, `value`, opt. `cond` |
-| `recharge` | raster | optional; else `physics.recharge` |
+The aquifer is kept confined (`icelltype=0`) deliberately. It makes the
+governing equation exactly the one quoted above; an unconfined formulation
+would make transmissivity head-dependent and the forward and inverse models
+would no longer be solving the same problem.
 
----
-
-## Architecture
-
-Four field representations share one interface and one residual, so the comparison
-is like-for-like. All are twice-differentiable by autograd.
-
-| `model.arch` | what it is |
+| Component | Setting |
 |---|---|
-| `mlp` | Fourier-feature MLP — the standard PINN backbone |
-| `resnet` | the same with residual blocks |
-| `modified_mlp` | gated architecture of Wang, Teng & Perdikaris (2021) |
-| `cnn` | convolutional decoder to a grid, read back through a **cubic B-spline** — **default** |
+| Conductivity | Layer-wise log-normal, geometric means 3 / 0.4 / 6 m/d, σ<sub>lnK</sub> = 0.8, correlation lengths (900, 700, 25) m |
+| Fault zone | 150 m wide, fully penetrating, K overwritten sharply |
+| **Scenario A — barrier** | K<sub>fault</sub> = 10⁻³ m/d (≈3.3 orders *below* host) |
+| **Scenario B — conduit** | K<sub>fault</sub> = 200 m/d (≈2 orders *above* host) |
+| Specific storage | 10⁻⁴ m⁻¹ |
+| Boundaries | Constant head 55 m (west) / 45 m (east); no-flow elsewhere |
+| Recharge | Spatially variable, ~10⁻⁴ m/d (MODFLOW `RCHA`) |
+| Evapotranspiration | Head-dependent linear ramp, surface 58 m, extinction depth 8 m (`EVTA`) |
+| Pumping | 3 wells, layers 0/1/2, staggered on/off schedules over 6 stress periods |
+| Time | 1 steady-state spin-up + 6 × 60 d transient, 10 d steps (37 output times) |
+| Monitoring | 15 wells × 2 screens = 30 points × 37 times = **1110 head values** |
+| Noise | Gaussian, σ = 15 mm |
 
-The CNN needs the spline because bilinear sampling has an identically zero second
-derivative and cannot feed a second-order PDE at all.
+Monitoring wells within 195 m of the fault plane are dropped — a real
+piezometer is not screened in a damage zone, and it keeps the cPINN's domain
+decomposition unambiguous. Data coverage is **0.67%** of the space–time grid.
 
-The measured comparison held one surprise. At a fixed 900-iteration budget the
-**CNN fits the calibration wells worst (0.164 m against 0.056 m) and generalises
-best** — lowest held-out RMSE, lowest head-field and transmissivity error. Its
-grid-plus-spline representation is band-limited, so unlike a Fourier-feature MLP
-it *cannot* put a narrow bump at each of the 47 calibration wells, and is forced
-to explain them with a field coherent at the scale of the aquifer. That is
-regularisation, not capacity: the CNN has 6× more parameters.
+The two scenarios are identical in every respect except the fault conductivity,
+and they are cleanly separable in the heads: extrapolating the head field to
+each fault wall and differencing gives a **+8.6 m** jump for the barrier against
+**+0.001 m** for the conduit at steady state.
 
-The ordering held across two independent runs on two code revisions, so `cnn`
-is the default. Switch to `resnet` when barriers are narrower than the CNN's
-pixel pitch (78 m in this case), when the domain is fragmented enough that
-masking wastes capacity, or when wall clock binds — it is half the time for
-about 85% of the accuracy. Full tables, reasoning and a situation-by-situation
-recommendation in
-[`docs/architecture_comparison.md`](docs/architecture_comparison.md).
+### Two forward engines
 
-### Why these components
+`gwpinns.benchmark.modflow6` builds and runs a genuine MODFLOW 6 model through
+FloPy (DIS / NPF / STO / IC / CHD / RCHA / EVTA / WEL / OC).
 
-* **Random Fourier features, multi-scale.** Coordinate MLPs are biased toward low
-  frequencies and will not resolve a heterogeneous property field. Three frequency
-  bands per network avoid guessing one bandwidth (Tancik et al. 2020; Wang et al. 2021).
-* **Separate head and property networks.** The head field is smoothed by the PDE and
-  is low-frequency; the property field is rough. The property network gets a
-  higher-frequency Fourier band.
-* **Non-dimensionalisation.** Coordinates to `[-1,1]`, heads standardised, and the
-  residual divided by a characteristic magnitude. Without this the residual and the
-  data losses differ by many orders of magnitude and no fixed weights work.
-* **Gradient-norm adaptive loss balancing** (Wang et al. 2021), with a ceiling: as a
-  loss term approaches zero its gradient does too, and the raw rule sends its weight
-  to infinity.
-* **Noise-floored data loss.** Residuals smaller than `train.head_noise` cost
-  nothing, so the model fits the wells to within their stated accuracy and no
-  further — the chi-square-of-one target of classical calibration. Fitting below the
-  measurement error is fitting noise, and it *raises* the error between wells.
-* **Adam then L-BFGS**, with collocation points frozen during L-BFGS (its line
-  search assumes a deterministic objective).
+`gwpinns.benchmark.fdsolver` is a reference implementation of the *same*
+discretisation in NumPy/SciPy — cell-centred finite volume, harmonic-mean
+inter-cell conductances, fully implicit time stepping, constant-head rows, and
+MODFLOW's segmented linear ET ramp linearised implicitly with Picard outer
+iterations. `generate_benchmark(..., engine="auto")` prefers MODFLOW and falls
+back to it with a warning.
 
----
+The fallback is not taken on trust. `tests/test_benchmark.py` validates it
+against the **Theis solution** (agreement within 5% over radii of 4–12 cells)
+and against the **1-D series-resistance law** for steady flow through a low-K
+slab (within 5%).
 
-## Validation
+> **Provenance note.** The results in this repository were produced with the
+> reference finite-difference solver: the sandbox used for development had no
+> network route to the MODFLOW binary distribution. The FloPy script is
+> complete and is the intended default; re-running with `--engine mf6` on a
+> machine with `mf6` installed exercises it.
 
-`scripts/make_sample_data.py` builds a two-layer aquifer with a meandering river,
-one impermeable and one leaky fault, and Gaussian-random-field property fields with
-a **known** variogram, then solves it with a conventional cell-centred
-finite-difference model (`gwpinn/data/fdsolver.py`).
+### Outputs per scenario
 
-Only sparse samples are handed to the PINN — well readings with noise, gauge stages,
-pumping tests with log-scale scatter, and the **uncorrected** layer rasters. The full
-solution is kept aside for scoring.
-
-This matters: the FD solver and the PINN share no code beyond the physics they
-represent — one is a mesh-based linear solve, the other a mesh-free optimisation —
-so agreement between them is evidence about the method, not a shared formulation
-error. Both are independently checked against closed-form solutions in `tests/`.
-
-Metrics produced: RMSE / MAE / bias / R² / NSE / KGE / PBIAS / RSR / Willmott's d,
-on calibration wells, held-out wells, per layer, and cell-by-cell against the
-reference; Moran's I and a residual semivariogram (is spatial structure left in the
-error?); error growth with distance from the nearest calibration well; recovery of
-fault permeability, riverbed conductance and leakance; and, with
-`train.n_ensemble > 1`, a spatial uncertainty map from the ensemble spread.
-
-```bash
-python -m pytest tests/ -q
 ```
-
-### Results on the synthetic case
-
-59 wells (47 calibration / 12 held out), 6 gauges, 28 pumping tests, two layers,
-10 × 8 km. `modified_mlp`, 4000 Adam + 250 L-BFGS iterations. Full report and all
-figures in [`docs/example_run/`](docs/example_run/).
-
-| quantity | n | RMSE | R² |
-|---|---|---|---|
-| head, calibration wells | 47 | 0.041 m | 0.9998 |
-| **head, held-out wells** | 12 | **0.810 m** | **0.947** |
-| head field vs reference, layer 0 | 28,010 | 1.08 m | 0.870 |
-| head field vs reference, layer 1 | 28,010 | 1.07 m | 0.868 |
-| log10 T at pumping tests | 28 | 0.066 | 0.989 |
-| log10 T field vs reference, layer 0 | 28,010 | 0.611 | −0.97 |
-
-Head residuals show no significant spatial autocorrelation (Moran's I = 0.034,
-p = 0.36), and validation error grows sensibly with distance from the nearest
-calibration well (0.17 m within 200 m → 1.23 m at ~1 km).
-
-### What it does *not* do well
-
-Reported plainly, because the figures show it either way:
-
-- **The transmissivity field has negative R² against the truth.** It reproduces
-  the observed *texture* (correlation length and variance — see
-  `08_variograms.png`) and recovers large-scale anomalies in layer 1, but it is
-  biased about 0.3 log10 units low and has little pointwise skill. Recovering a
-  log-normal K field from 15 pumping tests and 47 heads is genuinely
-  under-determined; the head field is recovered far better than the properties
-  that produce it.
-- **The head jump across the impermeable fault is not reproduced** by default
-  (`10_faults.png`): the reference has a 6 m step, the model a 1 m ramp — 12% of
-  the throw. Adding collocation points inside the barrier zone raised coverage
-  from 3.6% to 16.7% and did not fix it. It turns out to be a *representational*
-  limit as much as a data one: mapping the coordinates through the fault
-  indicator recovers up to 72% of the step, at a real cost to everything else
-  ([`docs/fault_representation.md`](docs/fault_representation.md)). Either way,
-  a barrier's throw wants an observation pair straddling it.
-- **The lumped physical parameters trade off against each other.** Riverbed
-  conductance came back 13× low and vertical leakance 5× low, while the head
-  field stayed accurate — different combinations reproduce the same heads. Treat
-  the fitted conductances as effective values, not measurements.
-
----
-
-## Configuration
-
-Everything is driven by one YAML file, round-tripped from dataclasses in
-`gwpinn/config.py` (which carries the per-field documentation). Unknown keys are
-rejected rather than silently ignored.
-
-```yaml
-paths:
-  dtm: dtm.tif
-  layer_bottoms: [bottom_layer1.tif, bottom_layer2.tif]
-  head_obs: head_obs.shp
-  gauge_obs: gauges.shp
-  river_polygon: river_polygon.shp
-  faults: faults.shp
-  prop_obs: aquifer_props.shp
-
-physics:
-  regime: steady          # or transient
-  recharge: 1.2e-4        # m/d
-  leakance: [1.0e-3]      # 1/d, per interface
-  fault_width: 60.0       # m, barrier smear half-width
-
-model:
-  arch: modified_mlp
-
-train:
-  adam_iters: 6000
-  lbfgs_iters: 300
-  head_noise: 0.05        # m, assumed measurement accuracy
-  n_ensemble: 1           # >1 gives uncertainty maps
+data/benchmark/<scenario>/
+    config.json        full configuration, round-trippable
+    truth.npz          head grid, true K, stress fields, coordinates
+    observations.csv   the sparse training data
+    observations.npz   the same, for fast loading
+    sources.csv        well coordinates, cell volumes, pumping schedules
+    manifest.json      provenance and summary diagnostics
 ```
 
 ---
 
-## Layout
+## Phase 2 — the architectures
+
+### Non-dimensionalisation
+
+Inputs are mapped to `[-1,1]` per axis and the head is centred and scaled on the
+*observed* values only. Dividing the flow equation by `Ss·Δh/a_t` gives the
+residual every architecture shares:
 
 ```
-gwpinn/
-  config.py            YAML-backed configuration
-  dataset.py           reads every input, assembles training batches
-  io/                  raster & shapefile IO, layer overlap correction
-  geo/                 domain, river centerline & stage, fault fields
-  physics/             autodiff operators, flow residual, boundary conditions
-  models/              Fourier features, backbones, head & property fields
-  stats/               variograms, kriging, accuracy metrics
-  train/               losses, adaptive weighting, Adam + L-BFGS
-  postproc/            prediction, raster export, reporting, plots
-  data/                Gaussian random fields, FD reference solver, sample case
-scripts/               make_sample_data.py, train.py, benchmark_architectures.py
-tests/
+d_T H  −  α · Σ_i μ_i² d_i( K d_i H )  −  β · W  =  0
+
+μ_i = L0/a_i     α = a_t/(Ss·L0²)     β = a_t/(Ss·Δh)
 ```
 
-## References
+`K` enters in **physical units** and the reference conductivity cancels
+completely — the physics loss needs no prior guess of K. The first-order (mixed)
+form of the identical equation is
 
-- Raissi, Perdikaris & Karniadakis (2019), *Physics-informed neural networks*, JCP 378.
-- Tancik et al. (2020), *Fourier features let networks learn high frequency functions*, NeurIPS.
-- Wang, Teng & Perdikaris (2021), *Understanding and mitigating gradient flow pathologies in PINNs*, SIAM J. Sci. Comput. 43(5).
-- Wang, Wang & Perdikaris (2021), *On the eigenvector bias of Fourier feature networks*, CMAME 384.
-- Harbaugh (2005), *MODFLOW-2005*, USGS TM 6-A16 — quasi-3D layering, RIV and HFB packages.
-- Gupta et al. (2009), *Decomposition of the mean squared error and NSE performance criteria*, J. Hydrol. 377.
+```
+Darcy       :  U_i + (K/K0)·μ_i·d_i H                    = 0
+continuity  :  d_T H + α·K0·Σ_i μ_i·d_i U_i  −  β·W      = 0
+```
+
+`tests/test_pinn.py` checks both forms against a manufactured analytic solution
+and against each other.
+
+### The forcing term `W`
+
+`W` is *known* to the inverse problem — pumping is metered and recharge/ET are
+prescribed constitutive laws — so it is evaluated exactly as the forward model
+applied it: wells as `Q/V_cell` inside the screened cell during the relevant
+stress period, recharge as `R(x,y)/Δz₀` in the top layer, and ET as the MODFLOW
+ramp evaluated on the model's **own predicted head**, keeping it in the autograd
+graph. The PINN therefore solves a genuinely head-dependent sink rather than
+being handed the answer.
+
+### 1. Baseline inverse PINN (`baseline.py`)
+
+`H = N_h(X,Y,Z,T)` and `K = N_k(X,Y,Z)`, trained on data misfit plus the
+second-order residual. The divergence is built by nested autograd, so the
+`∇K·∇h` cross term is exact without ever being written out. This is also its
+weakness: across the fault `∇K` is near-singular.
+
+### 2. Mixed-variable PINN (`mixed.py`)
+
+The network outputs the Darcy flux alongside the head,
+`(H, U_x, U_y, U_z) = N(X,Y,Z,T)`, and the equation is split into Darcy's law
+and mass conservation. Only first derivatives appear. Crucially, the quantity
+that is physically *continuous* across the fault — the normal flux — is a direct
+network output rather than a product of two discontinuous factors. No-flow
+boundaries also become algebraic (`U_n = 0`) instead of differential.
+
+### 3. cPINN — conservative domain decomposition (`cpinn.py`)
+
+Two independent head networks and two independent K networks, one per fault
+block. Neither ever has to represent the discontinuity; it lives entirely in the
+coupling.
+
+Flux continuity across the plane is unconditional:
+
+```
+Q_n^west = Q_n^east
+```
+
+For the head, note the physics: **strict head continuity cannot represent a
+barrier.** A low-permeability fault exists precisely to sustain a head jump, and
+forcing `H_west = H_east` would make the model explain that jump with a badly
+wrong conductivity field on either side. The correct thin-feature condition is a
+*leaky wall*:
+
+```
+Q_n = Γ · (H_west − H_east),        Γ = C·L0/K0,    C = K_fault / width
+```
+
+`Γ → 0` is a perfect barrier; `Γ → ∞` recovers head continuity. **The fitted Γ
+is itself the answer to "barrier or conduit?"** — a single interpretable number,
+reported back as `K_fault = C · width` in m/d. It is inferred, never prescribed.
+The condition is imposed in the normalised form `[Γ(H_w − H_e) − Q_n]/(1 + Γ)`,
+which stays well conditioned at both limits.
+
+This is a deliberate extension of the usual cPINN interface conditions. The
+textbook `H_west = H_east` form is retained as `--interface-mode continuity` so
+the study can show it failing on the barrier scenario.
+
+### Making the inverse problem converge
+
+Three ingredients, each earning its place:
+
+- **Gradient-norm loss balancing** (Wang, Teng & Perdikaris 2021). The PDE
+  residual starts ~10⁵× the data misfit, largely because the 83:1 horizontal-to-
+  vertical aspect ratio puts a factor `μ_z² ≈ 6900` on the vertical diffusion
+  term. Unbalanced, the optimiser spends its whole budget flattening vertical
+  gradients.
+- **Physics curriculum.** A data-only warm-up followed by a linear ramp of the
+  physics weights. Switching the PDE on at iteration zero, against an untrained
+  head field, drives K straight into the bottom of its bounded range.
+- **Bounded log-K with a weak Tikhonov prior.** Away from wells and observation
+  points the problem is genuinely degenerate — shrinking K towards zero satisfies
+  the PDE for *any* smooth head field — and the optimiser reliably finds that
+  route. The prior is a round-number bulk estimate (1 m/d, deliberately not the
+  benchmark's true 1.93 m/d geometric mean) at low weight.
+
+The `residual_weighting="source"` option divides the residual by `1 + |βW|`.
+Inside a pumping cell `βW` is ~1000× its bulk value, so an unweighted
+mean-square residual is effectively a well-cell-only loss.
+
+---
+
+## Results
+
+See [`docs/RESULTS.md`](docs/RESULTS.md) for the full study, figures and the
+honest account of what does and does not work.
+
+---
+
+## Citation of methods
+
+- Theis (1935) — analytical validation of the forward solver.
+- Langevin et al. — MODFLOW 6 discretisation (harmonic conductances, EVT ramp).
+- Raissi, Perdikaris & Karniadakis (2019) — PINNs.
+- Jagtap, Kharazmi & Karniadakis (2020) — conservative PINNs.
+- Wang, Teng & Perdikaris (2021) — gradient-norm loss balancing.
+- Tancik et al. (2020) — Fourier feature encoding.
