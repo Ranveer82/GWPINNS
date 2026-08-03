@@ -45,7 +45,7 @@ class LossWeights:
     interface_flux: float = 1.0
     interface_head: float = 1.0
     k_smoothness: float = 0.0
-    k_prior: float = 0.05
+    k_prior: float = 0.25
 
     def as_dict(self) -> dict[str, float]:
         return asdict(self)

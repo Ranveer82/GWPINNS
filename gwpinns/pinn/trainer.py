@@ -296,7 +296,10 @@ def train(
         """
         if not train_cfg.prior_decay:
             return 1.0
-        start = train_cfg.warmup_iterations
+        # Hold full strength through the warm-up *and* the physics ramp -- that
+        # window is exactly when the degenerate K -> 0 direction is most
+        # attractive.  Only once the physics is fully on does the prior fade.
+        start = train_cfg.warmup_iterations + train_cfg.ramp_iterations
         span = max(train_cfg.adam_iterations - start, 1)
         progress = min(max((iteration - start) / span, 0.0), 1.0)
         return float(1.0 + (train_cfg.prior_floor - 1.0) * progress)

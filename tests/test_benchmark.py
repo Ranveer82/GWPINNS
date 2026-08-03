@@ -222,6 +222,51 @@ def test_barrier_and_conduit_produce_opposite_signatures():
     assert abs(conduit_jump) < 0.2, "a conduit must nearly erase the head jump"
 
 
+flopy = pytest.importorskip("flopy", reason="FloPy is only needed for the MODFLOW path")
+
+
+def test_modflow_simulation_writes_valid_input(tmp_path):
+    """Build the MODFLOW 6 model and check the written input files.
+
+    This exercises the whole FloPy path without needing the compiled ``mf6``
+    binary, so the Phase 1 deliverable stays covered in environments where the
+    executable is unavailable.
+    """
+    from gwpinns.benchmark.modflow6 import build_simulation
+
+    cfg = BenchmarkConfig(scenario="barrier")
+    sim, gwf, k3d = build_simulation(cfg, tmp_path)
+    sim.write_simulation(silent=True)
+
+    packages = set(gwf.package_names)
+    for required in ("dis", "npf", "sto", "ic", "chd_0", "rcha_0", "evta_0", "wel_0", "oc"):
+        assert any(required in name for name in packages), f"missing {required}: {packages}"
+
+    written = {p.suffix for p in tmp_path.iterdir() if p.is_file()}
+    for suffix in (".dis", ".npf", ".sto", ".wel", ".chd", ".tdis", ".ims"):
+        assert suffix in written, f"{suffix} not written; got {sorted(written)}"
+
+    # One steady-state spin-up period plus the configured transient periods.
+    tdis = next(tmp_path.glob("*.tdis")).read_text()
+    assert f"NPER  {cfg.time.n_periods + 1}" in tdis
+
+    sto = next(tmp_path.glob("*.sto")).read_text()
+    assert "CONSTANT  0" in sto              # iconvert = confined
+    assert "BEGIN period  1\n  STEADY-STATE" in sto
+    assert "BEGIN period  2\n  TRANSIENT" in sto
+
+    # Wells are off during the spin-up and follow the schedule afterwards.
+    wel = next(tmp_path.glob("*.wel")).read_text()
+    assert "BEGIN period  1\nEND period  1" in wel.replace("\r\n", "\n")
+    for period in range(cfg.time.n_periods):
+        expected = sum(1 for w in cfg.wells if w.rate_at(period) != 0.0)
+        block = wel.split(f"BEGIN period  {period + 2}")[1].split("END period")[0]
+        assert len([ln for ln in block.strip().splitlines() if ln.strip()]) == expected
+
+    # The fault is present in the conductivity array handed to NPF.
+    assert np.allclose(k3d[fault_mask(cfg)], cfg.fault_k)
+
+
 def test_observations_avoid_the_fault_zone_and_carry_noise():
     cfg = BenchmarkConfig(scenario="barrier")
     solution = solve_forward(cfg)

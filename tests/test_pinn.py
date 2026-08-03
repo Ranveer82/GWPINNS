@@ -279,8 +279,11 @@ def test_log_conductivity_is_bounded_and_initialised():
     log_k = net.log10_k(x)
     assert log_k.min().item() >= -4.0
     assert log_k.max().item() <= 3.0
-    # Near the origin the field starts close to the requested initial value.
-    assert net.log10_k(torch.zeros(1, 3, dtype=torch.float64)).item() == pytest.approx(0.5, abs=0.6)
+    # The field starts nearly uniform at the requested initial value, so that a
+    # random initial K does not manufacture a huge starting PDE residual.
+    inside = net.log10_k(torch.rand(2000, 3, dtype=torch.float64) * 2.0 - 1.0)
+    assert inside.mean().item() == pytest.approx(0.5, abs=0.15)
+    assert inside.std().item() < 0.3
 
 
 def test_fault_conductance_modes_and_bounds():

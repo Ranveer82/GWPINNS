@@ -50,7 +50,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float64")
 
     parser.add_argument("--data-weight", type=float, default=10.0)
-    parser.add_argument("--k-prior-weight", type=float, default=0.05)
+    parser.add_argument("--k-prior-weight", type=float, default=0.25)
     parser.add_argument("--log-k-init", type=float, default=0.0,
                         help="prior/initial bulk log10 K in m/d")
     parser.add_argument("--no-adaptive-weights", action="store_true")

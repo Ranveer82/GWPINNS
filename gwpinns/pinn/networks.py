@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import math
+from typing import Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 
-__all__ = ["FourierFeatures", "MLP", "LogConductivityNet", "FaultConductance"]
+__all__ = [
+    "FourierFeatures",
+    "MLP",
+    "LogConductivityNet",
+    "FaultConductance",
+    "HEAD_FOURIER_SIGMA",
+    "K_FOURIER_SIGMA",
+]
+
+# Per-axis Fourier bandwidths.  Horizontal directions carry the structure
+# (fault, drawdown cones, heterogeneity); the vertical is nearly hydrostatic
+# and time is smooth apart from the stress-period steps.
+HEAD_FOURIER_SIGMA = (2.0, 2.0, 0.25, 1.0)      # (X, Y, Z, T)
+K_FOURIER_SIGMA = (3.0, 3.0, 0.4)               # (X, Y, Z)
 
 
 class FourierFeatures(nn.Module):
@@ -17,14 +32,39 @@ class FourierFeatures(nn.Module):
     for a problem whose defining feature is a sharp fault.  A random Fourier
     encoding lifts that bias.  ``B`` is a fixed (non-trained) buffer so the
     encoding stays a deterministic property of the model.
+
+    ``sigma`` may be a **per-axis** sequence, and for this problem it must be.
+    An isotropic encoding puts the same high-frequency content on ``z`` as on
+    ``x``, and the vertical diffusion term carries a factor ``mu_z^2 ~ 7000``;
+    the untrained residual is then ~10^13 and the only cheap way for the
+    optimiser to reduce it is to drive ``K`` to its lower bound, from which the
+    bounded parameterisation cannot recover.  Since a 60 m-thick aquifer is
+    nearly hydrostatic in the vertical, a low vertical bandwidth costs nothing
+    physically and fixes the conditioning.
     """
 
-    def __init__(self, in_dim: int, n_features: int = 64, sigma: float = 2.0):
+    def __init__(
+        self,
+        in_dim: int,
+        n_features: int = 64,
+        sigma: float | Sequence[float] = 2.0,
+    ):
         super().__init__()
         self.in_dim = in_dim
         self.n_features = n_features
+
+        scales = torch.as_tensor(
+            [float(sigma)] * in_dim if np.isscalar(sigma) else list(sigma),
+            dtype=torch.get_default_dtype(),
+        )
+        if scales.numel() != in_dim:
+            raise ValueError(
+                f"sigma must be scalar or length {in_dim}, got {scales.numel()}"
+            )
+        self.register_buffer("sigma", scales)
+
         if n_features > 0:
-            b = torch.randn(in_dim, n_features) * sigma
+            b = torch.randn(in_dim, n_features) * scales[:, None]
             self.register_buffer("B", b)
         else:
             self.register_buffer("B", torch.zeros(in_dim, 0))
@@ -50,7 +90,7 @@ class MLP(nn.Module):
         width: int = 96,
         depth: int = 5,
         fourier_features: int = 64,
-        fourier_sigma: float = 2.0,
+        fourier_sigma: float | Sequence[float] = 2.0,
     ):
         super().__init__()
         self.encoding = FourierFeatures(in_dim, fourier_features, fourier_sigma)
@@ -89,7 +129,7 @@ class LogConductivityNet(nn.Module):
         width: int = 96,
         depth: int = 5,
         fourier_features: int = 64,
-        fourier_sigma: float = 3.0,
+        fourier_sigma: float | Sequence[float] = K_FOURIER_SIGMA,
         log_k_min: float = -4.0,
         log_k_max: float = 3.0,
         log_k_init: float = 0.0,
@@ -111,10 +151,15 @@ class LogConductivityNet(nn.Module):
         # saturation points, so a field that collapses to the lower bound early
         # in training can never climb back out; starting mid-range avoids that
         # trap without prescribing the answer.
+        #
+        # The output layer is also damped so the initial field is nearly
+        # *uniform* at that value.  A randomly structured starting K interacts
+        # with an equally random starting head field to produce a very large
+        # initial residual, which is what pushes K towards the bound.
         target = (log_k_init - float(self.log_mid)) / float(self.log_half)
-        nn.init.constant_(
-            self.net.layers[-1].bias, math.atanh(max(min(target, 0.99), -0.99))
-        )
+        with torch.no_grad():
+            self.net.layers[-1].weight.mul_(0.05)
+            self.net.layers[-1].bias.fill_(math.atanh(max(min(target, 0.99), -0.99)))
 
     def log10_k(self, x: torch.Tensor) -> torch.Tensor:
         return self.log_mid + self.log_half * torch.tanh(self.net(x))
@@ -146,7 +191,7 @@ class FaultConductance(nn.Module):
         width: int = 32,
         depth: int = 3,
         fourier_features: int = 16,
-        fourier_sigma: float = 1.5,
+        fourier_sigma: float | Sequence[float] = (1.5, 0.4),
         log_gamma_min: float = -5.0,
         log_gamma_max: float = 5.0,
         log_gamma_init: float = 0.0,

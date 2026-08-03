@@ -51,7 +51,13 @@ from ..config import BenchmarkConfig
 from .base import BasePINN
 from .derivatives import grad
 from .forcing import ForcingTerm
-from .networks import MLP, FaultConductance, LogConductivityNet
+from .networks import (
+    HEAD_FOURIER_SIGMA,
+    K_FOURIER_SIGMA,
+    MLP,
+    FaultConductance,
+    LogConductivityNet,
+)
 from .scaling import Scaling
 
 __all__ = ["ConservativePINN"]
@@ -68,11 +74,11 @@ class ConservativePINN(BasePINN):
         head_width: int = 80,
         head_depth: int = 5,
         head_fourier: int = 48,
-        head_fourier_sigma: float = 2.0,
+        head_fourier_sigma=HEAD_FOURIER_SIGMA,
         k_width: int = 80,
         k_depth: int = 5,
         k_fourier: int = 48,
-        k_fourier_sigma: float = 3.0,
+        k_fourier_sigma=K_FOURIER_SIGMA,
         log_k_min: float = -4.0,
         log_k_max: float = 3.0,
         log_k_init: float = 0.0,
