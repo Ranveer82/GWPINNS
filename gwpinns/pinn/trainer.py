@@ -65,6 +65,8 @@ class TrainConfig:
     # physics curriculum: ramp the PDE terms in after the data-only warm-up
     ramp_iterations: int = 1000
     log_k_init: float = 0.0                 # prior/initial bulk log10 K, m/d
+    prior_decay: bool = True                # fade the Tikhonov prior as physics ramps in
+    prior_floor: float = 0.02               # residual prior strength at the end of training
 
     # architecture hyper-parameters
     width: int = 96
@@ -283,11 +285,28 @@ def train(
 
     weights = train_cfg.weights
 
-    def _ramped(base: LossWeights, factor: float) -> LossWeights:
-        """Scale the physics terms by ``factor`` (the curriculum ramp)."""
+    def _prior_factor(iteration: int) -> float:
+        """Fade the Tikhonov prior out as the physics fades in.
+
+        The prior exists to stop K collapsing to its lower bound before the head
+        field is good enough to constrain it.  Once the physics is fully ramped
+        in, leaving the prior at full strength simply pins K to the prior value
+        -- the field stops being data-driven.  Decaying it to a small floor keeps
+        the early stabilisation without buying it at the cost of the answer.
+        """
+        if not train_cfg.prior_decay:
+            return 1.0
+        start = train_cfg.warmup_iterations
+        span = max(train_cfg.adam_iterations - start, 1)
+        progress = min(max((iteration - start) / span, 0.0), 1.0)
+        return float(1.0 + (train_cfg.prior_floor - 1.0) * progress)
+
+    def _ramped(base: LossWeights, factor: float, prior: float = 1.0) -> LossWeights:
+        """Scale the physics terms by ``factor`` and the prior by ``prior``."""
         scaled = LossWeights(**base.as_dict())
         for name in ("pde", "darcy", "neumann", "interface_flux", "interface_head"):
             setattr(scaled, name, getattr(base, name) * factor)
+        scaled.k_prior = base.k_prior * prior
         return scaled
 
     warm_weights = _ramped(weights, 0.0)
@@ -306,13 +325,16 @@ def train(
             batches = _draw_batches(model, sampler, train_cfg)
 
         warming = iteration < train_cfg.warmup_iterations
+        prior_factor = _prior_factor(iteration)
         if warming:
             active = warm_weights
-        elif train_cfg.ramp_iterations > 0:
-            progress = (iteration - train_cfg.warmup_iterations) / train_cfg.ramp_iterations
-            active = _ramped(weights, min(progress, 1.0))
         else:
-            active = weights
+            progress = (
+                (iteration - train_cfg.warmup_iterations) / train_cfg.ramp_iterations
+                if train_cfg.ramp_iterations > 0
+                else 1.0
+            )
+            active = _ramped(weights, min(progress, 1.0), prior_factor)
 
         optimizer.zero_grad(set_to_none=True)
         terms = model.loss_terms(
@@ -331,10 +353,12 @@ def train(
             and iteration % train_cfg.adapt_every == 0
         ):
             weights = _rebalance(terms, weights, params, train_cfg)
-            progress = (iteration - train_cfg.warmup_iterations) / max(
-                train_cfg.ramp_iterations, 1
+            progress = (
+                (iteration - train_cfg.warmup_iterations) / train_cfg.ramp_iterations
+                if train_cfg.ramp_iterations > 0
+                else 1.0
             )
-            active = _ramped(weights, min(progress, 1.0)) if train_cfg.ramp_iterations else weights
+            active = _ramped(weights, min(progress, 1.0), prior_factor)
 
         loss, report = model.combine(terms, active)
         loss.backward()
@@ -356,6 +380,7 @@ def train(
 
     # --- L-BFGS polish on a fixed batch --------------------------------------- #
     if train_cfg.lbfgs_iterations > 0:
+        weights = _ramped(weights, 1.0, _prior_factor(train_cfg.adam_iterations))
         batches = _draw_batches(model, sampler, train_cfg)
         lbfgs = torch.optim.LBFGS(
             model.parameters(),
