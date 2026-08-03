@@ -322,14 +322,22 @@ def plot_fault_summary(results: dict, path: str | Path) -> Path:
             ax.annotate(f"{value:.3g}", (pos, value), textcoords="offset points",
                         xytext=(0, 5), ha="center", fontsize=9, color=TRUTH_INK)
 
+        # Reference lines are annotated in axes fractions so the labels cannot
+        # be clipped by the data limits.
         ax.axhline(truth, linestyle="--", color=TRUTH_INK, linewidth=1.8, zorder=5)
-        ax.annotate(f"true K_fault = {truth:g}", (len(names) - 0.45, truth),
-                    textcoords="offset points", xytext=(0, 5), ha="right",
-                    fontsize=9, color=TRUTH_INK)
+        ax.annotate(
+            f"true K_fault = {truth:g}", xy=(0.99, truth),
+            xycoords=ax.get_yaxis_transform(), textcoords="offset points",
+            xytext=(0, 4), ha="right", fontsize=9, color=TRUTH_INK,
+            bbox=dict(facecolor="#FCFCFB", edgecolor="none", pad=1.0),
+        )
         ax.axhline(background, linestyle=":", color=MUTED_INK, linewidth=1.5, zorder=5)
-        ax.annotate(f"background K = {background:.2g}", (0.0, background),
-                    textcoords="offset points", xytext=(0, 5), ha="left",
-                    fontsize=9, color=MUTED_INK)
+        ax.annotate(
+            f"background K = {background:.2g}", xy=(0.01, background),
+            xycoords=ax.get_yaxis_transform(), textcoords="offset points",
+            xytext=(0, 4), ha="left", fontsize=9, color=MUTED_INK,
+            bbox=dict(facecolor="#FCFCFB", edgecolor="none", pad=1.0),
+        )
 
         ax.set_yscale("log")
         ax.set_xticks(positions)
