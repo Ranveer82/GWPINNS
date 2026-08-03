@@ -45,10 +45,15 @@ GWPINNS/
 ├── scripts/
 │   ├── 01_generate_benchmark.py  Build both scenarios
 │   ├── 02_train.py               Train one architecture on one scenario
-│   └── 03_run_study.py           Full comparison + figures + Markdown report
+│   ├── 03_run_study.py           Full comparison + figures + Markdown report
+│   ├── 04_ablations.py           Interface condition / prior / residual weighting
+│   └── 05_merge_study.py         Recombine per-scenario study runs
 ├── tests/
 │   ├── test_benchmark.py         Incl. Theis and 1-D barrier analytical validation
 │   └── test_pinn.py              Incl. manufactured-solution check of the residual
+├── docs/
+│   ├── METHOD.md                 Why the equations and numerics are as they are
+│   └── RESULTS.md                The study, with figures and the honest caveats
 ├── data/                         Generated benchmarks (gitignored)
 └── runs/                         Training outputs (gitignored)
 ```
@@ -66,7 +71,7 @@ python -m flopy.utils.get_modflow ~/.local/bin
 python scripts/01_generate_benchmark.py            # Phase 1: both scenarios
 python scripts/03_run_study.py --quick             # smoke test, a few minutes
 python scripts/03_run_study.py                     # full study
-pytest -q                                          # 35 tests
+pytest -q                                          # 36 tests
 ```
 
 ---
