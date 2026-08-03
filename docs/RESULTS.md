@@ -168,6 +168,38 @@ the most expensive model by a factor of ~2.8.
 
 ---
 
+## Ablation 1 — the interface condition is load-bearing
+
+The cPINN's leaky-wall condition is a deliberate departure from the textbook
+conservative-PINN interface, which imposes continuity of both flux *and*
+solution. This ablation re-runs the barrier scenario with only that condition
+changed (4000 Adam iterations, everything else identical).
+
+| interface condition | head RMSE (m) | **predicted head jump (m)** | K fault (m/d) | contrast log₁₀ | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `conductance` — leaky wall | **1.147** | **9.26** | 2.0 × 10⁻⁵ | −4.00 | **barrier ✓** |
+| `continuity` — `H_w = H_e` | 2.281 | **0.176** | 0.0960 | −0.15 | neutral ✗ |
+
+True head jump: **6.74 m**.
+
+The mechanism is visible directly in the head field. Imposing `H_w = H_e`
+forces the predicted jump to **0.176 m** where the truth is **6.74 m** — the
+model class simply cannot express a barrier. Two consequences follow:
+
+- the fault verdict flips from correct to wrong, and
+- **head RMSE doubles** (1.147 → 2.281 m). The constraint is not merely
+  uninformative about the fault, it is actively harmful to the state, because
+  the model must distort the head field everywhere to satisfy an interface
+  condition the data contradict.
+
+This is why `conductance` is the default. `--interface-mode continuity` is kept
+so the failure can be reproduced rather than taken on trust.
+
+Note the symmetry with Finding 3: strict continuity is the wrong model class
+for a *barrier*, and the leaky wall is the wrong model class for a *conduit*.
+Neither is universal, and a fault interface that handles both needs a
+cross-plane leakance **and** an in-plane transmissivity.
+
 ## What this study does and does not establish
 
 **Established.**
