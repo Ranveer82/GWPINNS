@@ -25,6 +25,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
+
+from gwpinns.benchmark import load_benchmark
+from gwpinns.benchmark.generate import head_jump
 from gwpinns.evaluation import plots
 
 COLUMNS = [
@@ -35,6 +39,7 @@ COLUMNS = [
     ("k_background_pred_m_per_d", "K bulk (m/d)"),
     ("k_fault_pred_m_per_d", "K fault (m/d)"),
     ("contrast_log10_pred", "contrast log₁₀"),
+    ("head_jump_pred_m", "head jump (m)"),
     ("predicted_label", "verdict"),
     ("correct_classification", "correct"),
     ("wall_time_s", "time (s)"),
@@ -63,7 +68,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("inputs", nargs="+", help="per-scenario study directories")
     parser.add_argument("--outdir", default="runs/study")
+    parser.add_argument("--datadir", default="data/benchmark",
+                        help="benchmark root, used to backfill missing metrics")
     return parser.parse_args(argv)
+
+
+def backfill_head_jump(source: Path, scenario: str, entries: dict, datadir: Path) -> None:
+    """Recompute the fault head jump from saved predictions where it is missing.
+
+    Runs started before the metric existed still have their predicted head grids
+    on disk, so the diagnostic can be recovered without retraining.
+    """
+    if all(e.get("head_jump_pred_m") is not None for e in entries.values()):
+        return
+    scenario_dir = datadir / scenario
+    if not (scenario_dir / "manifest.json").exists():
+        return
+    data = load_benchmark(scenario_dir)
+    truth = head_jump(data.cfg, data.heads[-1])
+
+    for architecture, metrics in entries.items():
+        predictions = source / scenario / architecture / "predictions.npz"
+        if metrics.get("head_jump_pred_m") is not None or not predictions.exists():
+            continue
+        with np.load(predictions) as payload:
+            metrics["head_jump_pred_m"] = head_jump(data.cfg, payload["h_pred"][-1])
+        metrics["head_jump_true_m"] = truth
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     for source in args.inputs:
         source = Path(source)
         payload = json.loads((source / "results.json").read_text())
+        for scenario, entries in payload.items():
+            backfill_head_jump(source, scenario, entries, Path(args.datadir))
         merged.update(payload)
         for scenario in payload:
             figures = source / scenario / "figures"
