@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Testing / tooling
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Study outputs (regenerate with the scripts/ entry points)
+data/
+runs/
+
+# MODFLOW workspace artefacts
+*.hds
+*.cbc
+*.lst
