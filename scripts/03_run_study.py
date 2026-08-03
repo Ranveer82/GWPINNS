@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the full comparative study and write the report.
 
-Trains every architecture on every scenario, scores each against the benchmark
+Trains every architecture on every scenario (see also 05_merge_study.py for
+recombining per-scenario runs), scores each against the benchmark
 truth, and emits figures, a JSON results file and a Markdown summary.
 
 Examples

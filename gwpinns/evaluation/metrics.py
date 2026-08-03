@@ -126,6 +126,8 @@ def fault_metrics(
     predicted_k: np.ndarray,
     true_k: np.ndarray,
     inferred_fault_k: float | None = None,
+    predicted_heads: np.ndarray | None = None,
+    true_heads: np.ndarray | None = None,
 ) -> dict[str, object]:
     """Did the model get the fault right?
 
@@ -133,6 +135,8 @@ def fault_metrics(
     cPINN reports ``K_f = C * width`` from its leakance parameter rather than
     from grid cells it never models.
     """
+    from ..benchmark.generate import head_jump
+
     mask = fault_mask(cfg)
     log_pred = np.log10(np.clip(predicted_k, 1e-12, None))
     log_true = np.log10(np.clip(true_k, 1e-12, None))
@@ -149,7 +153,7 @@ def fault_metrics(
     predicted_verdict = classify_fault(k_fault_pred, k_background_pred)
     true_verdict = classify_fault(k_fault_true, k_background_true)
 
-    return {
+    report: dict[str, object] = {
         "true_scenario": cfg.scenario,
         "predicted_label": predicted_verdict.label,
         "correct_classification": predicted_verdict.label == cfg.scenario,
@@ -166,6 +170,16 @@ def fault_metrics(
         "k_background_pred_m_per_d": k_background_pred,
         "k_background_true_m_per_d": k_background_true,
     }
+
+    # Does the *head field* carry the fault's hydraulic signature?  This is
+    # independent of the recovered K, and it is the quantity a hydrogeologist
+    # would actually check: a barrier sustains a head jump across the zone, a
+    # conduit erases it.
+    if predicted_heads is not None and true_heads is not None:
+        report["head_jump_pred_m"] = head_jump(cfg, predicted_heads[-1])
+        report["head_jump_true_m"] = head_jump(cfg, true_heads[-1])
+
+    return report
 
 
 def observation_cell_mask(cfg: BenchmarkConfig, obs) -> np.ndarray:
@@ -192,5 +206,10 @@ def evaluate(
     report: dict[str, object] = {}
     report.update(head_metrics(predicted_heads, true_heads, obs_cells))
     report.update(conductivity_metrics(cfg, predicted_k, true_k))
-    report.update(fault_metrics(cfg, predicted_k, true_k, inferred_fault_k))
+    report.update(
+        fault_metrics(
+            cfg, predicted_k, true_k, inferred_fault_k,
+            predicted_heads=predicted_heads, true_heads=true_heads,
+        )
+    )
     return report
