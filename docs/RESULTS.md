@@ -22,6 +22,11 @@ float64, 4 CPU cores (each scenario run as a 2-thread process). Wall time
 4. **The mixed-variable formulation reproduces heads best**, 30–35% below the
    baseline in both scenarios, consistent with avoiding second derivatives
    across the discontinuity.
+5. **Both design choices in the cPINN are load-bearing, and one of them is
+   doing more work than the data.** Replacing the leaky wall with textbook head
+   continuity breaks the barrier identification and doubles head RMSE; removing
+   the Tikhonov prior collapses K to its lower bound. The prior sweep shows the
+   recovered bulk conductivity tracks the prior rather than the truth.
 
 ---
 
@@ -200,6 +205,51 @@ for a *barrier*, and the leaky wall is the wrong model class for a *conduit*.
 Neither is universal, and a fault interface that handles both needs a
 cross-plane leakance **and** an in-plane transmissivity.
 
+## Ablation 2 — how much of the answer is the prior?
+
+Finding 1 claims the conductivity field is not recovered. This sweep is the
+test of that claim: it varies the Tikhonov prior's bulk value over two orders of
+magnitude, and turns it off entirely, on the barrier scenario with the
+mixed-variable architecture (4000 Adam iterations).
+
+If the data constrained bulk K, the recovered value would be insensitive to the
+prior. It is not.
+
+| prior bulk K (m/d) | recovered bulk K (m/d) | log₁₀ | log₁₀K RMSE | head RMSE (m) |
+| --- | --- | --- | --- | --- |
+| 0.1 | 0.0946 | −1.02 | 1.448 | 1.158 |
+| 1.0 *(default)* | 0.768 | −0.11 | 0.740 | 1.359 |
+| 10.0 | 0.542 | −0.27 | 0.840 | 2.736 |
+| **none** | **0.000283** | **−3.55** | 3.883 | 1.709 |
+| *truth* | *1.933* | *+0.286* | — | — |
+
+Three things follow, and the third is the one that matters.
+
+**Without the prior, K collapses.** Turning it off drives bulk conductivity to
+2.8 × 10⁻⁴ m/d — essentially the lower bound of the bounded parameterisation,
+3.8 log₁₀ units below the truth. The degenerate direction described in
+[`METHOD.md`](METHOD.md) §5 wins outright. The prior is not a refinement; without
+it the inversion does not produce a usable answer at all.
+
+**The physics constrains K from above but not from below.** A prior of 0.1 is
+accepted almost unchanged (0.095), whereas a prior of 10 is dragged down to
+0.54. So there *is* information in the residual — it refuses a conductivity that
+is too large — but that ceiling sits at roughly 0.5–0.8 m/d, which is itself
+**below** the true 1.93 m/d. The data never push K up towards the truth.
+
+**Therefore the recovered bulk conductivity is set by the regularisation, not by
+the data.** Across the whole sweep no setting recovers the true 1.93 m/d, and
+the answer moves with the prior wherever the prior is below the physics ceiling.
+Reporting the default run's `K bulk = 0.77 m/d` as an inversion result would be
+reporting the prior back, lightly modified.
+
+This is the evidence behind Finding 1, and it is why the constant-field
+reference is quoted there rather than a bare RMSE. It also bounds how much the
+fault result can be trusted: the cPINN's barrier identification survives because
+it rests on an **interface parameter** constrained by the head jump — a quantity
+the data measure directly at 6.74 m against 0.015 m noise — and not on the
+conductivity field, which is not constrained at all.
+
 ## What this study does and does not establish
 
 **Established.**
@@ -210,7 +260,11 @@ cross-plane leakance **and** an in-plane transmissivity.
   by any of the three.
 - The first-order mixed formulation reproduces heads better and faster than the
   second-order baseline.
-- A leaky-wall interface is structurally incapable of representing a conduit.
+- A leaky-wall interface is structurally incapable of representing a conduit,
+  and strict head continuity is structurally incapable of representing a
+  barrier. Both are demonstrated, not asserted.
+- The recovered bulk conductivity is set by the Tikhonov prior, not by the data;
+  without the prior the inversion collapses to its lower bound.
 
 **Not established.**
 - Whether a longer budget would change the K-field conclusion. 6000 Adam
