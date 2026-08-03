@@ -13,9 +13,11 @@ venv/
 .mypy_cache/
 .ipynb_checkpoints/
 
-# Study outputs (regenerate with the scripts/ entry points)
 data/
 runs/
+
+# ...but the curated figures committed under docs/ are kept
+!docs/figures/**
 
 # MODFLOW workspace artefacts
 *.hds
