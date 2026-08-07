@@ -124,6 +124,17 @@ class Problem:
         dhdt = np.gradient(h, case.dt, axis=0)
         self.scales.residual = float(max(np.abs(case.sy * dhdt).mean(), 1e-6))
 
+        # Characteristic depth-integrated Darcy flux, used to scale the mixed
+        # formulation's flux output so the network emits O(1) numbers.  Deriving
+        # it from the reference rather than hard-coding a round number matters:
+        # a flux head asked to produce 0.02 trains far more slowly than one
+        # asked to produce 1, and that would penalise the mixed formulation for
+        # a scaling mistake rather than for anything about the formulation.
+        gy_ref, gx_ref = np.gradient(h.mean(0), case.delc, case.delr)
+        grad_ref = float(np.abs(np.hypot(gx_ref, gy_ref)).mean())
+        b_ref = float(np.mean(np.clip(h.mean(0) - case.botm, 1.0, None)))
+        self.flux_scale = float(max(np.median(case.kh) * b_ref * grad_ref, 1e-3))
+
         # ---- forcing -------------------------------------------------------
         self.times = T(case.times)
         self.dt = float(case.dt)

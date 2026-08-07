@@ -156,9 +156,9 @@ class Surrogate(nn.Module):
     def flux(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Depth-integrated Darcy flux, m2/d."""
         coords, extra = self._inputs(x, y, t)
-        # Scaled by a characteristic transmissivity times a unit gradient so the
-        # network output stays O(1).
-        return self.flux_net(coords, extra) * 1.0e2
+        # Scaled by the characteristic flux of the reference solution so the
+        # network output stays O(1); see Problem.flux_scale.
+        return self.flux_net(coords, extra) * self.prob.flux_scale
 
     def k(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         return self.k_field(x, y)
