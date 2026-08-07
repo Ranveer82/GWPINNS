@@ -142,6 +142,59 @@ def design(budget: float, seed: int = 0) -> List[Spec]:
     return runs
 
 
+def followup(budget: float, seed: int = 0) -> List[Spec]:
+    """Follow-ups that check whether a screening conclusion is real.
+
+    Two screening results deserve challenging before they are written down:
+
+    * the mixed formulation was run with a mis-scaled flux head (it was asked to
+      emit ~0.02 instead of ~1), so its numbers may say more about that than
+      about the formulation.  Re-run with the flux scale derived from the
+      reference;
+    * causal weighting scored badly at ``eps = 1``.  The scheme is known to be
+      sensitive to ``eps`` - too large and every bin after the first is frozen
+      out - and reporting "causal weighting hurts" from a single untuned value
+      would be a wrong negative.  Sweep it.
+    """
+    def S(name: str, **kw) -> Spec:
+        cfg = dict(BASELINE)
+        cfg.update(kw)
+        spec = Spec(name=name, seed=seed, max_seconds=budget, **cfg)
+        spec.group = "followup"     # type: ignore[attr-defined]
+        spec.inverse = False        # type: ignore[attr-defined]
+        return spec
+
+    return [
+        S("mixed:rescaled", form="mixed"),
+        S("mixed+sidefeat:rescaled", form="mixed", fault="sidefeat"),
+        S("causal:eps0.1", temporal="causal", causal_eps=0.1),
+        S("causal:eps0.01", temporal="causal", causal_eps=0.01),
+    ]
+
+
+def budget_check(budget: float, seed: int = 0) -> List[Spec]:
+    """The same two leaders at a much larger budget.
+
+    The headline caveat of this study is that every run is far short of
+    convergence, so the ranking could be an artefact of who starts fastest.
+    Re-running the baseline and the control-volume form at 4x the budget is the
+    direct test of that, and it also shows whether the mass-balance criterion -
+    stuck near 0.8 against a floor of 0.079 - is budget-limited or structural.
+    """
+    def S(name: str, **kw) -> Spec:
+        cfg = dict(BASELINE)
+        cfg.update(kw)
+        spec = Spec(name=name, seed=seed, max_seconds=budget, **cfg)
+        spec.group = "budget"       # type: ignore[attr-defined]
+        spec.inverse = False        # type: ignore[attr-defined]
+        return spec
+
+    return [S("budget:strong"), S("budget:fv", form="fv")]
+
+
+DESIGNS = {"screen": design, "followup": followup, "budget": budget_check}
+
+
 # --------------------------------------------------------------------------- #
 # Execution
 # --------------------------------------------------------------------------- #
@@ -182,6 +235,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--seeds", type=int, default=1,
                     help="Seeds per run; >1 repeats the design.")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--design", default="screen", choices=sorted(DESIGNS),
+                    help="Which set of runs to execute.")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-plots", action="store_true")
     args = ap.parse_args(argv)
@@ -226,7 +281,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     t_all = time.time()
 
     for seed in range(args.seeds):
-        for spec in design(args.budget, seed=seed):
+        for spec in DESIGNS[args.design](args.budget, seed=seed):
             if groups and getattr(spec, "group", "") not in groups:
                 continue
             if (spec.name, seed) in done:

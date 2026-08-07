@@ -78,6 +78,12 @@ class Spec:
     n_boundary: int = 384
     fv_time_slices: int = 3
     resample_every: int = 50
+    #: Causal-weighting strength.  The scheme is known to be sensitive to this:
+    #: too large and every bin after the first is frozen out, too small and it
+    #: degenerates to uniform weighting.  Exposed so it can be swept rather than
+    #: assumed.
+    causal_eps: float = 1.0
+    causal_bins: int = 16
     seed: int = 0
     #: Wall-clock budget in seconds.  The study compares formulations at *equal
     #: compute*, not equal iterations: per-iteration cost varies four-fold across
@@ -208,7 +214,8 @@ class Runner:
         self.rba = (ResidualAttention(spec.n_colloc, device=str(prob.device),
                                       dtype=prob.dtype)
                     if spec.balance == "rba" else None)
-        self.causal = (CausalWeighting(n_bins=16, eps=1.0, t0=prob.t0, t1=prob.t1)
+        self.causal = (CausalWeighting(n_bins=spec.causal_bins, eps=spec.causal_eps,
+                                       t0=prob.t0, t1=prob.t1)
                        if spec.temporal == "causal" else None)
         self.march = (TimeMarching(prob.t0, prob.t1, n_stages=4)
                       if spec.temporal == "march" else None)
