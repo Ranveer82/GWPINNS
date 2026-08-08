@@ -153,6 +153,8 @@ class CausalWeighting:
     eps: float = 1.0
     t0: float = 0.0
     t1: float = 1.0
+    #: Normalise the cumulative loss so ``eps`` is dimensionless.  See __call__.
+    normalize: bool = True
 
     def bin_of(self, t: torch.Tensor) -> torch.Tensor:
         u = (t - self.t0) / max(self.t1 - self.t0, 1e-12)
@@ -170,6 +172,17 @@ class CausalWeighting:
         # w_i = exp(-eps * sum_{j<i} L_j); detached so the weights steer the
         # optimiser without contributing gradients of their own.
         cum = torch.cumsum(per_bin, 0) - per_bin
+        if self.normalize:
+            # Without this, eps is not dimensionless and has to be retuned every
+            # time the residual scale changes.  On this problem the per-bin loss
+            # starts around 1e4, so *any* eps above ~1e-4 drives exp(-eps*cum) to
+            # zero for every bin after the first and the scheme silently becomes
+            # "train on the first time bin only".  That is a units bug, not a
+            # verdict on causal training, and it is what an untuned sweep over
+            # eps = 1, 0.1, 0.01 was actually measuring here.  Normalising the
+            # cumulative loss by its own total makes eps dimensionless, so
+            # eps ~ 1-10 spans the meaningful range regardless of problem scale.
+            cum = cum / cum[-1].clamp_min(1e-12)
         w = torch.exp(-self.eps * cum).detach()
         return (w * per_bin).sum() / w.sum().clamp_min(1e-12)
 

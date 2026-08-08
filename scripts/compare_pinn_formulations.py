@@ -167,8 +167,31 @@ def followup(budget: float, seed: int = 0) -> List[Spec]:
     return [
         S("mixed:rescaled", form="mixed"),
         S("mixed+sidefeat:rescaled", form="mixed", fault="sidefeat"),
-        S("causal:eps0.1", temporal="causal", causal_eps=0.1),
-        S("causal:eps0.01", temporal="causal", causal_eps=0.01),
+        S("causal:eps0.1", temporal="causal", causal_eps=0.1, causal_normalize=False),
+        S("causal:eps0.01", temporal="causal", causal_eps=0.01, causal_normalize=False),
+    ]
+
+
+def causal_fixed(budget: float, seed: int = 0) -> List[Spec]:
+    """Causal weighting with a scale-free eps, which is what it should have been.
+
+    The screening runs used an un-normalised cumulative loss, so eps carried the
+    units of the residual and every value tried froze out all but the first time
+    bin.  With the cumulative loss normalised, eps is dimensionless and these
+    values span the meaningful range.
+    """
+    def S(name: str, **kw) -> Spec:
+        cfg = dict(BASELINE)
+        cfg.update(kw)
+        spec = Spec(name=name, seed=seed, max_seconds=budget, **cfg)
+        spec.group = "causal"       # type: ignore[attr-defined]
+        spec.inverse = False        # type: ignore[attr-defined]
+        return spec
+
+    return [
+        S("causal-norm:eps1", temporal="causal", causal_eps=1.0),
+        S("causal-norm:eps5", temporal="causal", causal_eps=5.0),
+        S("fv+causal-norm:eps2", form="fv", temporal="causal", causal_eps=2.0),
     ]
 
 
@@ -192,7 +215,8 @@ def budget_check(budget: float, seed: int = 0) -> List[Spec]:
     return [S("budget:strong"), S("budget:fv", form="fv")]
 
 
-DESIGNS = {"screen": design, "followup": followup, "budget": budget_check}
+DESIGNS = {"screen": design, "followup": followup, "budget": budget_check,
+           "causal": causal_fixed}
 
 
 # --------------------------------------------------------------------------- #

@@ -84,6 +84,8 @@ class Spec:
     #: assumed.
     causal_eps: float = 1.0
     causal_bins: int = 16
+    #: Normalise the cumulative loss so causal_eps is scale-free.
+    causal_normalize: bool = True
     seed: int = 0
     #: Wall-clock budget in seconds.  The study compares formulations at *equal
     #: compute*, not equal iterations: per-iteration cost varies four-fold across
@@ -215,7 +217,8 @@ class Runner:
                                       dtype=prob.dtype)
                     if spec.balance == "rba" else None)
         self.causal = (CausalWeighting(n_bins=spec.causal_bins, eps=spec.causal_eps,
-                                       t0=prob.t0, t1=prob.t1)
+                                       t0=prob.t0, t1=prob.t1,
+                                       normalize=spec.causal_normalize)
                        if spec.temporal == "causal" else None)
         self.march = (TimeMarching(prob.t0, prob.t1, n_stages=4)
                       if spec.temporal == "march" else None)
