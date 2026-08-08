@@ -34,6 +34,21 @@ the baseline at 1.486 m, is *worse than doing nothing*.
 
 **Nothing beat persistence on the fault criterion.** Best skill: +0.002.
 
+A three-seed replication (§6) puts error bars on that and forces one claim to be
+weakened. What survives:
+
+| claim | evidence |
+|---|---|
+| strong form is **worse** than persistence | t = −5.4, n=3 — solid |
+| mixed form is **worse** than persistence | t = −7.8, n=3 — solid |
+| control-volume is **better than the strong form** | t = +5.2, n=3 — solid |
+| control-volume is **better than persistence** | t = +1.0, n=3 — **not established** |
+
+So the defensible statement is *not* "the control-volume form beats doing
+nothing" — one of its three seeds (0.974 m) does not. It is: **the control-volume
+form is the only one that is not decisively worse than doing nothing, and it is
+decisively better than the alternatives.**
+
 Two lessons. Always score the null model — without it this study would have
 reported a tidy ranking of methods that mostly could not beat a constant. And
 `head_nse ≈ 0.99` is meaningless here: the spatial head range is 32 m while the
@@ -70,8 +85,14 @@ up to 4,172). It is not winning on compute; it is winning on structure.
 Enforcing the balance over control volumes, where face fluxes telescope, is worth
 more than three times as many collocation steps.
 
-Architecture changes moved head RMSE by ±30%. Changing the formulation moved it
-by a factor of two and was the only thing that crossed the persistence line.
+Seed-to-seed variation is ~13% (§6), so **the differences *within* the
+control-volume family — `fv+sidefeat` 0.703, `fv+causal` 0.754, `fv` 0.772,
+`fv+pirate` 0.775 — are not resolvable.** Treat rows 1–4 as one result. The gap
+between that family and everything else (0.844 ± 0.117 against 1.512 ± 0.191) is
+what is real.
+
+Architecture changes moved head RMSE by ±30%, which is barely outside the ±13%
+seed noise. Changing the formulation moved it by a factor of two.
 **That ordering is the most useful thing this study says.**
 
 **PirateNet lost at equal wall clock** (2.14 m, worst architecture) — not because
@@ -155,10 +176,14 @@ changes the head field by only **0.018 m RMSE** (0.94% amplitude damping), two
 orders of magnitude below the effect. The time-discretisation floor is
 negligible.
 
-I do not have an explanation. A 7% change on a single seed may simply be
-run-to-run variation; a seed replication of the baseline and both `form` variants
-is reported in the results tables and should be consulted before treating the
-plateau as real.
+**Resolved: it is noise.** Across three seeds at 240 s, `form:fv` scores
+0.844 ± 0.117 m. The 960 s value of 0.826 m sits **−0.2σ** from that mean — i.e.
+four times the compute produced no detectable change at all, in either direction.
+The apparent degradation was a single-seed artefact and there is no plateau to
+explain.
+
+What *did* improve with compute is the mass balance (0.672 → 0.503), which is a
+real effect and much larger than the seed spread.
 
 ## 6. Nobody conserved mass, and nobody solved the inverse problem
 
@@ -193,8 +218,12 @@ problem**, and choosing between parameterisations does not change that.
 
 - **Not a convergence comparison.** Everything is far from converged. §5 is the
   only evidence about what more compute does, and it covers two variants.
-- **Seed replication covers three variants only**; the rest are single-seed, and
-  the 7% FV anomaly in §5 sits at about the scale where that matters.
+- **Seed replication covers three variants at three seeds.** Everything else is
+  single-seed, and with ~13% seed noise no single-seed difference below ~25%
+  should be believed — which includes every ranking within the control-volume
+  family and most of the architecture axis.
+- **n = 3 is small.** "Control-volume beats persistence" is suggestive at
+  t = +1.0 and would need more seeds to settle.
 - **Single layer.** Nothing tests vertical discretisation or the quasi-3D leakage
   of the full five-layer benchmark.
 - **The fault criterion is uninformative** for the reason in §4. The evolution
@@ -212,9 +241,10 @@ problem**, and choosing between parameterisations does not change that.
 For this class of problem — heterogeneous, faulted, tidally forced, judged on
 water balance:
 
-1. **Use a control-volume residual.** The only formulation that beat persistence,
-   from the fewest iterations, and the only one whose mass balance improved
-   materially with compute.
+1. **Use a control-volume residual.** The only formulation that is not decisively
+   worse than doing nothing, decisively better than the alternatives (t = +5.2),
+   achieved from the fewest iterations, and the only one whose mass balance
+   improved materially with compute.
 2. **Add causal weighting with a scale-free ε.** Free, and it helped both forms.
    Check that your ε is dimensionless before concluding anything about it.
 3. **Add an explicit flux output if the river budget is the deliverable.** The
