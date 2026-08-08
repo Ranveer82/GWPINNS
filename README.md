@@ -360,6 +360,46 @@ scripts/               make_sample_data.py, train.py, benchmark_architectures.py
 tests/
 ```
 
+## MODFLOW 6 benchmark and the formulation study
+
+Two companion pieces sit alongside the inversion tool.
+
+**A hostile MODFLOW 6 benchmark** (`scripts/build_mf6_hetero_benchmark.py`) — five
+layers, 100×100 cells at 100 m, 360 stress periods of 2 h. Meandering stream and
+tidal river, an incised alluvial meander belt that pinches out, undulating
+stratigraphic contacts, two HFB faults (impermeable and leaky), a 12.4 h
+semi-diurnal tide, storms and flash floods, and a K field with var(lnK) = 2 at a
+200 m correlation length. It exports 128 GeoTIFFs and 11 Shapefiles — properties,
+geometry, distance-to-feature covariates, multi-band head time stacks, specific
+discharge — so a surrogate can be trained and scored without touching a MODFLOW
+binary. Report: [`docs/mf6_hetero_benchmark_report.pdf`](docs/mf6_hetero_benchmark_report.pdf).
+
+```bash
+python scripts/build_mf6_hetero_benchmark.py           # build, run, export, report
+```
+
+**A controlled study of physics-informed formulations**
+(`scripts/compare_pinn_formulations.py`) — which formulation actually works for
+head simulation, head across faults, mass balance, river exchange and inverse
+recovery of K. Six independent axes (`form`, `arch`, `fault`, `temporal`,
+`balance`, `kfield`) varied one at a time from a common baseline, at equal
+wall-clock budget, against a single-layer MODFLOW reference whose budget closes
+to ~1e-7.
+
+```bash
+python scripts/compare_pinn_formulations.py            # the screening design
+python scripts/report_pinn_study.py                    # tables + PDF
+```
+
+- Design and SOTA survey: [`docs/pinn_formulation_design.md`](docs/pinn_formulation_design.md)
+- Conclusions: [`docs/pinn_formulation_findings.md`](docs/pinn_formulation_findings.md)
+
+The short version: **the PDE formulation dominates the architecture and the loss
+weighting.** A control-volume residual was the only thing that beat a persistence
+null model, and it did so from the fewest iterations. Read the findings for the
+caveats — the study also turned up a weak criterion and a units bug of its own.
+
+
 ## References
 
 - Raissi, Perdikaris & Karniadakis (2019), *Physics-informed neural networks*, JCP 378.
@@ -368,3 +408,8 @@ tests/
 - Wang, Wang & Perdikaris (2021), *On the eigenvector bias of Fourier feature networks*, CMAME 384.
 - Harbaugh (2005), *MODFLOW-2005*, USGS TM 6-A16 — quasi-3D layering, RIV and HFB packages.
 - Gupta et al. (2009), *Decomposition of the mean squared error and NSE performance criteria*, J. Hydrol. 377.
+- Wang, Sankaran & Perdikaris (2022), *Respecting causality for training PINNs*, CMAME.
+- Wang et al. (2024), *PirateNets: physics-informed deep learning with residual adaptive networks*.
+- Cho et al. (2023), *Separable physics-informed neural networks*, NeurIPS.
+- Jagtap, Kharazmi & Karniadakis (2020), *Conservative PINNs on discrete domains*, CMAME 365.
+- Kitanidis (1995), *Quasi-linear geostatistical theory for inversing*, Water Resour. Res. 31(10).
