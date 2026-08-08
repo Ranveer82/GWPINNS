@@ -31,6 +31,9 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
 
+from gwpinn.benchmark import load_reduced_case
+from gwpinn.eval import null_scores
+
 PAGE = (11.69, 8.27)
 TEXT_WIDTH = 108
 LINES_PER_PAGE = 50
@@ -105,7 +108,19 @@ def _image_page(path: pathlib.Path, pdf: PdfPages, caption: str = "") -> None:
 # --------------------------------------------------------------------------- #
 
 
-def ranking(df: pd.DataFrame, col: str, inverse: bool, n: int = 8) -> pd.DataFrame:
+NULL_FOR = {"score_head": "null_head_rmse_m", "score_fault": "null_fault_jump_rmse_m"}
+
+
+def ranking(df: pd.DataFrame, col: str, inverse: bool, n: int = 8,
+            null: Optional[Dict[str, float]] = None) -> pd.DataFrame:
+    """Ranking table, with a skill column against persistence where one exists.
+
+    The persistence baseline is inserted as a row rather than mentioned in a
+    footnote, because on this case it is a *strong* baseline: the hard initial
+    condition means a model that learns nothing still scores a head RMSE of
+    0.91 m.  A table without that row invites the reader to be impressed by
+    numbers that are worse than doing nothing.
+    """
     sub = df[df["inverse"].astype(bool)] if inverse else df[~df["inverse"].astype(bool)]
     if col not in sub.columns:
         return pd.DataFrame()
@@ -114,7 +129,23 @@ def ranking(df: pd.DataFrame, col: str, inverse: bool, n: int = 8) -> pd.DataFra
     for extra in ("head_nse", "fault_all_jump_recovery", "k_pattern_corr"):
         if extra in sub.columns and extra not in keep:
             keep.append(extra)
-    return sub[keep].head(n)
+    out = sub[keep].head(n).copy()
+
+    null_key = NULL_FOR.get(col)
+    if null and null_key and null_key in null:
+        nv = float(null[null_key])
+        out.insert(2, "skill_vs_null", [1.0 - float(v) / max(nv, 1e-12) for v in out[col]])
+        row = {c: np.nan for c in out.columns}
+        row["name"] = "-- persistence (null) --"
+        row[col] = nv
+        row["skill_vs_null"] = 0.0
+        if "head_nse" in row and null_key == "null_head_rmse_m":
+            row["head_nse"] = null.get("null_head_nse", np.nan)
+        if "fault_all_jump_recovery" in row and null_key == "null_fault_jump_rmse_m":
+            row["fault_all_jump_recovery"] = null.get("null_fault_jump_recovery", np.nan)
+        out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+        out = out.sort_values(col, kind="stable")
+    return out
 
 
 def axis_effects(df: pd.DataFrame) -> pd.DataFrame:
@@ -154,10 +185,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--study", default=str(repo / "runs" / "pinn_formulation_study"))
     ap.add_argument("--pdf", default=str(repo / "docs" / "pinn_formulation_study.pdf"))
     ap.add_argument("--md", default=str(repo / "docs" / "pinn_formulation_results.md"))
+    ap.add_argument("--case", default=str(repo / "runs" / "mf6_hetero_benchmark"
+                                          / "reduced_case" / "case.npz"))
+    ap.add_argument("--extra", default="", help="Comma-separated extra results.csv to merge.")
     args = ap.parse_args(argv)
 
     study = pathlib.Path(args.study)
-    df = pd.read_csv(study / "results.csv")
+    frames = [pd.read_csv(study / "results.csv")]
+    for extra in [e.strip() for e in args.extra.split(",") if e.strip()]:
+        frames.append(pd.read_csv(extra))
+    df = pd.concat(frames, ignore_index=True)
     if "error" in df.columns:
         failed = df[df["error"].notna()]
         df = df[df["error"].isna()]
@@ -170,6 +207,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if fp.exists():
         floor = json.loads(fp.read_text())
 
+    null = null_scores(load_reduced_case(pathlib.Path(args.case)))
     budget = float(df["seconds"].median()) if "seconds" in df else float("nan")
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -195,10 +233,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ]
     for k, v in floor.items():
         md.append(f"- `{k}` = **{v:.4g}**")
+    md += ["",
+           "## The persistence baseline", "",
+           "The initial condition is a hard constraint, so a model that learns "
+           "nothing still reproduces the true head field at t0 - including the "
+           "2.25 m head jump already present across the barriers. Every number "
+           "below must be read against this:", ""]
+    for k, v in null.items():
+        md.append(f"- `{k}` = **{v:.4g}**")
     md.append("")
 
     for label, col, unit, is_inv in CRITERIA:
-        tab = ranking(df, col, is_inv)
+        tab = ranking(df, col, is_inv, null=null)
         if tab.empty:
             continue
         md += [f"## {label}", "", f"_{unit}, lower is better_", "",
@@ -234,6 +280,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         for k, v in floor.items():
             summary += f"floor {k:<24s} {v:.4g}\n"
+        for k in ("null_head_rmse_m", "null_fault_jump_rmse_m"):
+            if k in null:
+                summary += f"null  {k:<24s} {null[k]:.4g}\n"
         fig.text(0.11, 0.50, summary, fontsize=9, family="monospace", va="top",
                  linespacing=1.75)
         pdf.savefig(fig)
@@ -251,7 +300,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             """),
         ]
         for label, col, unit, is_inv in CRITERIA:
-            tab = ranking(df, col, is_inv)
+            tab = ranking(df, col, is_inv, null=null)
             if tab.empty:
                 continue
             blocks += [("h", f"{label}  ({unit})"), ("pre", fmt(tab))]

@@ -108,6 +108,16 @@ def fault_metrics(pred: np.ndarray, ref: np.ndarray,
         out[f"fault_{tag}_jump_recovery"] = float(
             np.abs(jp).mean() / max(np.abs(jr).mean(), 1e-9))
         out[f"fault_{tag}_ref_jump_m"] = float(np.abs(jr).mean())
+        # The *evolution* of the jump, with the initial value removed.
+        #
+        # This exists because the hard initial condition hands every model the
+        # jump that exists at t0 - here 2.25 m of the eventual 2.46 m - so the
+        # raw numbers above mostly measure an inherited quantity, not a learned
+        # one.  Subtracting each model's own t0 jump leaves only what it did
+        # during the simulation, which on this case is a signal worth 0.29 m.
+        out[f"fault_{tag}_evolution_rmse_m"] = float(
+            np.sqrt((((jp - jp[0]) - (jr - jr[0])) ** 2).mean()))
+        out[f"fault_{tag}_ref_evolution_m"] = float(np.abs(jr - jr[0]).mean())
     return out
 
 
@@ -290,6 +300,38 @@ class ReferenceModel:
         return self.h
 
 
+def null_scores(case) -> Dict[str, float]:
+    """Score the *persistence* model: hold the head at its initial condition.
+
+    This is the baseline every result must be read against, and on this case it
+    is a strong one.  Because the initial condition is a hard constraint, every
+    surrogate starts from the true head field - complete with the 2.25 m head
+    jump already present across the barriers.  A model that learns nothing at
+    all therefore scores a head RMSE of 0.91 m and a fault-jump RMSE of 0.56 m.
+
+    Without this number the study would credit formulations for reproducing
+    something they were handed.  With it, the question becomes the right one:
+    does the surrogate extract any transient signal *beyond* the initial state?
+    """
+    ref = case.head
+    null = np.repeat(case.head_init[None], len(ref), axis=0)
+    ff = case.fault_faces.astype(int)
+    jn = null[:, ff[:, 0], ff[:, 1]] - null[:, ff[:, 2], ff[:, 3]]
+    jr = ref[:, ff[:, 0], ff[:, 1]] - ref[:, ff[:, 2], ff[:, 3]]
+    return {
+        "null_head_rmse_m": float(np.sqrt(((null - ref) ** 2).mean())),
+        "null_head_nse": _nse(null.ravel(), ref.ravel()),
+        "null_fault_jump_rmse_m": float(np.sqrt(((jn - jr) ** 2).mean())),
+        "null_fault_jump_recovery": float(np.abs(jn).mean() / max(np.abs(jr).mean(), 1e-9)),
+        "ref_transient_amplitude_m": float((ref.max(0) - ref.min(0)).mean()),
+    }
+
+
+def skill(score: float, null: float) -> float:
+    """Skill score against the persistence baseline: 1 perfect, 0 no better, <0 worse."""
+    return float(1.0 - score / max(null, 1e-12))
+
+
 def reference_scores(prob: Problem, case, n_times: int = 4) -> Dict[str, float]:
     """Score the reference solution - the floor of every criterion."""
     model = ReferenceModel(prob, case)
@@ -302,4 +344,4 @@ def reference_scores(prob: Problem, case, n_times: int = 4) -> Dict[str, float]:
 
 __all__ = ["evaluate", "CRITERIA", "head_metrics", "fault_metrics",
            "mass_metrics", "river_metrics", "inverse_metrics",
-           "ReferenceModel", "reference_scores"]
+           "ReferenceModel", "reference_scores", "null_scores", "skill"]
