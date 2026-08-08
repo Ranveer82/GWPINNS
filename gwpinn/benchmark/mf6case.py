@@ -223,6 +223,7 @@ def build_reduced_case(
     n_periods: int = 48,
     layer: int = 2,
     base_layer: int = 5,
+    substeps: int = 1,
     workdir: Optional[str | pathlib.Path] = None,
     exe: Optional[str] = None,
     quiet: bool = False,
@@ -327,7 +328,7 @@ def build_reduced_case(
         exe = _sh.which("mf6") or "mf6"
 
     head, head_init, budget, riv_leakage = _run_reference(
-        ws=ws, exe=exe, nrow=nrow, ncol=ncol, delr=delr, delc=delc,
+        substeps=substeps, ws=ws, exe=exe, nrow=nrow, ncol=ncol, delr=delr, delc=delc,
         x0=x0, y0=y0, epsg=epsg, kh=kh, sy=sy, ss=ss, top=top, botm=botm,
         fault_faces=fault_faces, riv_cells=riv_cells, riv_cond=riv_cond,
         riv_bottom=riv_bottom, wel_cells=wel_cells, wel_names=wel_names,
@@ -346,7 +347,7 @@ def build_reduced_case(
 
 
 def _run_reference(
-    *, ws, exe, nrow, ncol, delr, delc, x0, y0, epsg, kh, sy, ss, top, botm,
+    *, ws, exe, substeps, nrow, ncol, delr, delc, x0, y0, epsg, kh, sy, ss, top, botm,
     fault_faces, riv_cells, riv_cond, riv_bottom, wel_cells, wel_names,
     dt, riv_stage, recharge, wel_q, say,
 ):
@@ -401,7 +402,10 @@ def _run_reference(
                                  recharge={k: float(rch[k]) for k in range(len(perioddata))})
         flopy.mf6.ModflowGwfoc(
             gwf, head_filerecord="red.hds", budget_filerecord="red.cbc",
-            saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
+            # LAST rather than ALL so that a run with sub-stepping still reports
+            # exactly one record per stress period, at the same times as the
+            # single-step run - which is what makes the two directly comparable.
+            saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")],
         )
         return sim
 
@@ -419,7 +423,7 @@ def _run_reference(
     say(f"[case] spin-up head {h0.min():.2f}-{h0.max():.2f} m")
 
     # --- transient window ---------------------------------------------------
-    sim = _build(ws, [(dt, 1, 1.0)] * nper, True, h0[None, :, :],
+    sim = _build(ws, [(dt, substeps, 1.0)] * nper, True, h0[None, :, :],
                  riv_stage, recharge, wel_q)
     sim.write_simulation(silent=True)
     ok, buff = sim.run_simulation(silent=True)
@@ -462,6 +466,8 @@ def _run_reference(
     cbc.close()
 
     inflow = sum(np.clip(v, 0, None).sum() for v in budget.values())
+    if substeps > 1:
+        say(f"[case] reference solved with {substeps} time steps per stress period")
     say(f"[case] reference solved: head {head.min():.2f}-{head.max():.2f} m, "
         f"|budget terms| {len(budget)}, mean gross flux {inflow / nper:,.0f} m3/d")
     return head, h0, budget, riv_leak
