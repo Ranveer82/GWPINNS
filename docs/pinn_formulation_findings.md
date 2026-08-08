@@ -8,7 +8,7 @@ Narrative conclusions from the formulation study. Raw tables are in
 > **Scope.** 33 training runs at 240 s each on 4 CPU threads, plus two at 960 s
 > and a seed replication, against a 100×100-cell, 48-stress-period single-layer
 > MODFLOW reference. This is an equal-compute screening study, not a convergence
-> study. Read §7 before quoting any of it.
+> study. Read §8 before quoting any of it.
 
 ---
 
@@ -139,7 +139,7 @@ negative about a well-established method.
 **The fault criterion was too weak to resolve anything.** `fault:none` (1.200 m)
 *beat* the smeared-anisotropy baseline (1.486 m) with identical jump recovery
 (0.931 vs 0.931); `sidefeat` and `faultcoord` were worse on the jump criterion.
-Given §1, the honest reading is that the criterion could not distinguish these
+Given §1 and §6, the honest reading is that the criterion could not distinguish these
 options at all — the hard IC supplied the jump and nothing improved on it. That
 is a **benchmark design flaw**, now addressed by a `fault_*_evolution_rmse_m`
 metric that subtracts each model's own t₀ jump, leaving the 0.29 m of jump
@@ -150,7 +150,7 @@ metric, so the fault column in this study should be treated as uninformative.
 RBA). Where the formulation gap is 2×, arguing about weighting schemes is
 rearranging deck chairs.
 
-## 5. What more compute does — and one anomaly I could not explain
+## 5. What more compute does
 
 At 4× budget (960 s):
 
@@ -185,7 +185,31 @@ explain.
 What *did* improve with compute is the mass balance (0.672 → 0.503), which is a
 real effect and much larger than the seed spread.
 
-## 6. Nobody conserved mass, and nobody solved the inverse problem
+## 6. How much of this is noise?
+
+Three seeds each, 240 s, head RMSE:
+
+| variant | mean | sd | spread | CV |
+|---|---|---|---|---|
+| `form:fv` | **0.844** | 0.117 | 0.745 – 0.974 | 13.9% |
+| `baseline` (strong) | 1.512 | 0.191 | 1.317 – 1.699 | 12.6% |
+| `form:mixed` | 1.680 | 0.171 | 1.546 – 1.872 | 10.2% |
+| *persistence* | *0.912* | — | — | — |
+
+**Seed noise is ~13%.** That is the resolution limit of every single-seed number
+in this study, and it means:
+
+- differences below ~25% between single-seed runs are not interpretable — which
+  covers the whole architecture axis, the whole balance axis, and every ordering
+  within the control-volume family;
+- the formulation gap (0.844 vs 1.512, t = +5.2) is far outside it and is real;
+- `form:fv` vs persistence (t = +1.0) is *inside* it and is not established.
+
+Re-running seed 0 under different CPU load also drifted results by 0.2–3.5%
+(baseline 1.486 → 1.520), which is the cost of an equal-wall-clock protocol and
+is small next to the seed effect.
+
+## 7. Nobody conserved mass, and nobody solved the inverse problem
 
 **Mass balance**: every variant scored 0.50–0.88 local imbalance against a metric
 floor of **0.079**. The control-volume form was best — as it must be, being
@@ -214,7 +238,7 @@ Use an explicit prior.
 But the headline is negative: **240 s of CPU does not solve a 10,000-cell inverse
 problem**, and choosing between parameterisations does not change that.
 
-## 7. What this study does not establish
+## 8. What this study does not establish
 
 - **Not a convergence comparison.** Everything is far from converged. §5 is the
   only evidence about what more compute does, and it covers two variants.
@@ -236,7 +260,7 @@ problem**, and choosing between parameterisations does not change that.
   axis dominated everything else, an FNO or DeepONet trained on the benchmark's
   exported multi-band head stacks is the obvious next experiment.
 
-## 8. If you have to pick one thing
+## 9. If you have to pick one thing
 
 For this class of problem — heterogeneous, faulted, tidally forced, judged on
 water balance:
